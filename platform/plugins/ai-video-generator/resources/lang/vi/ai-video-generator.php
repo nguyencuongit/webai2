@@ -1,0 +1,50 @@
+<?php
+
+return [
+    'name' => 'AI Video Generator',
+    'menu' => 'AI Video',
+    'description' => 'Khung plugin để kết nối API tạo video bằng AI.',
+    'settings' => [
+        'title' => 'Cấu hình AI Video',
+        'description' => 'Thông tin API và tuỳ chọn nhà cung cấp sẽ được thêm khi có chi tiết tích hợp.',
+    ],
+    'tasks' => [
+        'name' => "T\u{00E1}c v\u{1EE5} t\u{1EA1}o AI",
+        'view' => "T\u{00E1}c v\u{1EE5} #:id",
+        'customer' => "Kh\u{00E1}ch h\u{00E0}ng",
+        'customer_id' => "ID kh\u{00E1}ch h\u{00E0}ng",
+        'task_id' => 'Task ID',
+        'status' => "Tr\u{1EA1}ng th\u{00E1}i",
+        'is_completed' => "\u{0110}\u{00E3} ho\u{00E0}n th\u{00E0}nh",
+        'completed_at' => "Ho\u{00E0}n th\u{00E0}nh l\u{00FA}c",
+        'generated' => "K\u{1EBF}t qu\u{1EA3} t\u{1EA1}o",
+        'has_nsfw' => "C\u{00F3} NSFW",
+        'payload' => 'Payload',
+    ],
+    'customers' => [
+        'name' => "Kh\u{00E1}ch h\u{00E0}ng AI",
+        'create' => "T\u{1EA1}o kh\u{00E1}ch h\u{00E0}ng",
+        'edit' => "S\u{1EED}a kh\u{00E1}ch h\u{00E0}ng: :name",
+        'phone' => "S\u{1ED1} \u{0111}i\u{1EC7}n tho\u{1EA1}i",
+        'credits_balance' => "S\u{1ED1} d\u{01B0} credit",
+        'parent' => "T\u{00E0}i kho\u{1EA3}n cha",
+        'no_parent' => "Kh\u{00F4}ng c\u{00F3}",
+        'change_password' => "\u{0110}\u{1ED5}i m\u{1EAD}t kh\u{1EA9}u",
+        'password' => "M\u{1EAD}t kh\u{1EA9}u",
+        'password_confirmation' => "X\u{00E1}c nh\u{1EAD}n m\u{1EAD}t kh\u{1EA9}u",
+        'private_notes' => "Ghi ch\u{00FA} n\u{1ED9}i b\u{1ED9}",
+        'status' => "Tr\u{1EA1}ng th\u{00E1}i",
+        'statuses' => [
+            'activated' => "Ho\u{1EA1}t \u{0111}\u{1ED9}ng",
+            'locked' => "\u{0110}\u{00E3} kh\u{00F3}a",
+        ],
+    ],
+    'credit_packages' => [
+        'name' => "G\u{00F3}i n\u{1EA1}p credit",
+        'create' => "T\u{1EA1}o g\u{00F3}i n\u{1EA1}p credit",
+        'edit' => "S\u{1EED}a g\u{00F3}i n\u{1EA1}p credit: :name",
+        'code' => "M\u{00E3} g\u{00F3}i",
+        'price' => "Gi\u{00E1} ti\u{1EC1}n (VND)",
+        'credits' => "Credit nh\u{1EAD}n \u{0111}\u{01B0}\u{1EE3}c",
+    ],
+];

@@ -1,0 +1,9 @@
+{
+    "id": "local/webai",
+    "name": "WebAI",
+    "namespace": "Theme\\WebAI\\",
+    "author": "WebAI",
+    "url": "#",
+    "version": "1.0.0",
+    "description": "A lightweight AI studio theme without ecommerce dependencies."
+}

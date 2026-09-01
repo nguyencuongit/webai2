@@ -1,0 +1,56 @@
+I: plugin giao hàng.(viettel-post, GHN, ...)
+
+1: công việc chính: 
+-kiểm tra phí vận chuyển,
+-tạo đơn hàng vận chuyển,
+-lưu id địa chỉ các vùng miền quận huyện.
+
+2: mục tiêu:
+-viết 1 core có thể dùng chung cho việc giao hàng. về sau chỉ cần viết các thương hiệu giao hàng là có thể dùng được. (dùng Strategy Pattern + Factory Pattern , )
+-lưu được ID của từng quận huyện xã và có thể thưởng xuyên tự động update. khoảng 7 ngày 1 lần, có thể nút cập nhập tức thì.
+
+3: các mục 
+-cấu hình chọn phương thức giao hàng của hãng nào. 
+
+- thông tin đơn hàng + thông tin giao hàng + tạo đơn. (trạng thái đơn hàng)  
+những đơn trong order (pendding) -> tạo đơn vận chuyển thành công -> lưu trạng thái thông tin shipping_order
+-> thay đổi trạng thái đơn ec_shipments (picked) -> sau đó các thông tin webhook thì thay đổi ở cả 2 bảng kia.
+
+4: model
+delivery: id , order-id , status , created_at , code-delivery , total , type(khách trả. mk trả) , shipping-fee(phí ship), collection(thu hộ) ...
+
+plugin: Logistics
+=> thêm việc : làm dashboard
++ tổng hợp số tiền ship (chung, riêng của từng đơn vị),
++ tổng hợp đơn đang giao, đã giao, huỷ (% của từng loại theo tháng);
++.....
+kết quả: xong;
+
+II: Địa điểm trong
+- ẩn quốc gia: mặc định Việt Nam.
+- có bảng tỉnh/ thành phố. kiểm tra xong( bài toán: làm sao để biết tỉnh này thì lưu id của hãng giao hàng để sau sử dụng.)
+- có bảng quận/ huyện. (Xong)
+
+3: nhân viên
+ 
+4: commission
+
+5: plugin accounting ( kế toán, xuất hoá đơn, chữ kí điện tử, thôgns kê ) (tích hợp misa)
+
+6: plugin inventory (kho)
+
+7: thanh toán( thêm liên kết với ngân hàng, hoặc 1 bên khác );
+
+8: Social (nội bộ, các facebook, youtube, tiktok,...)
+
+9: Task (công việc)
+
+10: Projects
+
+11: sàn thương mại điện tử khác;
+
+12: làm về plugin affilate, đồng chia. ( từ từ suy tính )
+
+13: tính hợp AI
+
+
