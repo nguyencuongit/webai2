@@ -23,6 +23,18 @@ Route::group(['namespace' => 'Botble\AiVideoGenerator\Http\Controllers'], functi
                 'permission' => 'ai-video-generator.index',
             ]);
 
+            Route::match(['GET', 'POST'], 'external-tasks', [
+                'as' => 'external-tasks.index',
+                'uses' => 'Admin\ExternalVideoTaskController@index',
+                'permission' => 'ai-video-generator.index',
+            ]);
+
+            Route::get('external-tasks/{task}', [
+                'as' => 'external-tasks.show',
+                'uses' => 'Admin\ExternalVideoTaskController@show',
+                'permission' => 'ai-video-generator.index',
+            ]);
+
             Route::get('customers', [
                 'as' => 'customers.index',
                 'uses' => 'Admin\AiVideoCustomerController@index',
@@ -114,14 +126,6 @@ Route::group(['namespace' => 'Botble\AiVideoGenerator\Http\Controllers'], functi
             Route::get('api-tokens/{apiToken}/edit', ['as' => 'api-tokens.edit', 'uses' => 'Admin\AiVideoApiTokenController@edit', 'permission' => 'ai-video-generator.api-tokens.edit']);
             Route::put('api-tokens/{apiToken}', ['as' => 'api-tokens.update', 'uses' => 'Admin\AiVideoApiTokenController@update', 'permission' => 'ai-video-generator.api-tokens.edit']);
             Route::delete('api-tokens/{apiToken}', ['as' => 'api-tokens.destroy', 'uses' => 'Admin\AiVideoApiTokenController@destroy', 'permission' => 'ai-video-generator.api-tokens.destroy']);
-
-            Route::get('models', ['as' => 'models.index', 'uses' => 'Admin\AiVideoModelController@index']);
-            Route::post('models/table', ['as' => 'models.table', 'uses' => 'Admin\AiVideoModelController@index']);
-            Route::get('models/create', ['as' => 'models.create', 'uses' => 'Admin\AiVideoModelController@create']);
-            Route::post('models', ['as' => 'models.store', 'uses' => 'Admin\AiVideoModelController@store']);
-            Route::get('models/{aiVideoModel}/edit', ['as' => 'models.edit', 'uses' => 'Admin\AiVideoModelController@edit']);
-            Route::put('models/{aiVideoModel}', ['as' => 'models.update', 'uses' => 'Admin\AiVideoModelController@update']);
-            Route::delete('models/{aiVideoModel}', ['as' => 'models.destroy', 'uses' => 'Admin\AiVideoModelController@destroy']);
 
             Route::get('model-endpoints', ['as' => 'model-endpoints.index', 'uses' => 'Admin\AiVideoModelEndpointController@index']);
             Route::post('model-endpoints/table', ['as' => 'model-endpoints.table', 'uses' => 'Admin\AiVideoModelEndpointController@index']);

@@ -24,4 +24,12 @@ class AiVideoModelEndpointRepository extends RepositoriesAbstract implements AiV
                 'price',
             ]);
     }
+
+    public function getActiveByCode(string $code): ?AiVideoModelEndpoint
+    {
+        return AiVideoModelEndpoint::query()
+            ->where('status', true)
+            ->where('code', trim($code))
+            ->first();
+    }
 }

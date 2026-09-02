@@ -2,28 +2,30 @@
 
 namespace Botble\AiVideoGenerator\Providers;
 
-use Botble\AiVideoGenerator\Commands\CleanTemporaryMediaCommand;
 use Botble\AiVideoGenerator\Commands\CleanExpiredGeneratedMediaCommand;
-use Botble\AiVideoGenerator\Models\Customer;
+use Botble\AiVideoGenerator\Commands\CleanTemporaryMediaCommand;
 use Botble\AiVideoGenerator\Models\AiGenerationTask;
 use Botble\AiVideoGenerator\Models\AiVideoApiToken;
 use Botble\AiVideoGenerator\Models\AiVideoModelEndpoint;
+use Botble\AiVideoGenerator\Models\Customer;
 use Botble\AiVideoGenerator\Repositories\Eloquent\AiGenerationTaskRepository;
 use Botble\AiVideoGenerator\Repositories\Eloquent\AiVideoApiTokenRepository;
 use Botble\AiVideoGenerator\Repositories\Eloquent\AiVideoModelEndpointRepository;
-use Botble\AiVideoGenerator\Repositories\Eloquent\CustomerCreditRepository;
 use Botble\AiVideoGenerator\Repositories\Eloquent\CreditPackagePaymentRepository;
+use Botble\AiVideoGenerator\Repositories\Eloquent\CustomerCreditRepository;
+use Botble\AiVideoGenerator\Repositories\Eloquent\ExternalVideoTaskRepository;
 use Botble\AiVideoGenerator\Repositories\Interfaces\AiGenerationTaskInterface;
 use Botble\AiVideoGenerator\Repositories\Interfaces\AiVideoApiTokenInterface;
 use Botble\AiVideoGenerator\Repositories\Interfaces\AiVideoModelEndpointInterface;
-use Botble\AiVideoGenerator\Repositories\Interfaces\CustomerCreditInterface;
 use Botble\AiVideoGenerator\Repositories\Interfaces\CreditPackagePaymentInterface;
+use Botble\AiVideoGenerator\Repositories\Interfaces\CustomerCreditInterface;
+use Botble\AiVideoGenerator\Repositories\Interfaces\ExternalVideoTaskInterface;
 use Botble\AiVideoGenerator\Services\AiGenerationService;
 use Botble\AiVideoGenerator\Services\AiGenerationTaskStatusService;
 use Botble\AiVideoGenerator\Services\AiGenerationWebhookService;
-use Botble\AiVideoGenerator\Services\CustomerCreditService;
-use Botble\AiVideoGenerator\Services\CreditPackagePurchaseService;
 use Botble\AiVideoGenerator\Services\CreditPackagePaymentCompletionService;
+use Botble\AiVideoGenerator\Services\CreditPackagePurchaseService;
+use Botble\AiVideoGenerator\Services\CustomerCreditService;
 use Botble\AiVideoGenerator\Services\VideoLabDataService;
 use Botble\Base\Facades\BaseHelper;
 use Botble\Base\Facades\DashboardMenu;
@@ -64,19 +66,23 @@ class AiVideoGeneratorServiceProvider extends ServiceProvider
         $this->app->singleton(VideoLabDataService::class);
 
         $this->app->bind(AiGenerationTaskInterface::class, function () {
-            return new AiGenerationTaskRepository(new AiGenerationTask());
+            return new AiGenerationTaskRepository(new AiGenerationTask);
         });
 
         $this->app->bind(AiVideoApiTokenInterface::class, function () {
-            return new AiVideoApiTokenRepository(new AiVideoApiToken());
+            return new AiVideoApiTokenRepository(new AiVideoApiToken);
+        });
+
+        $this->app->bind(ExternalVideoTaskInterface::class, function () {
+            return new ExternalVideoTaskRepository(new \Botble\AiVideoGenerator\Models\ExternalVideoTask);
         });
 
         $this->app->bind(AiVideoModelEndpointInterface::class, function () {
-            return new AiVideoModelEndpointRepository(new AiVideoModelEndpoint());
+            return new AiVideoModelEndpointRepository(new AiVideoModelEndpoint);
         });
 
         $this->app->bind(CustomerCreditInterface::class, function () {
-            return new CustomerCreditRepository(new Customer());
+            return new CustomerCreditRepository(new Customer);
         });
 
         $this->app->bind(CreditPackagePaymentInterface::class, CreditPackagePaymentRepository::class);
@@ -187,6 +193,16 @@ class AiVideoGeneratorServiceProvider extends ServiceProvider
                 )
                 ->registerItem(
                     DashboardMenuItem::make()
+                        ->id('cms-plugins-ai-video-generator-external-tasks')
+                        ->parentId('cms-plugins-ai-video-generator')
+                        ->priority(5)
+                        ->name('Lịch sử call API')
+                        ->icon('ti ti-api')
+                        ->route('ai-video-generator.external-tasks.index')
+                        ->permissions('ai-video-generator.index')
+                )
+                ->registerItem(
+                    DashboardMenuItem::make()
                         ->id('cms-plugins-ai-video-generator-customers')
                         ->parentId('cms-plugins-ai-video-generator')
                         ->priority(6)
@@ -217,16 +233,6 @@ class AiVideoGeneratorServiceProvider extends ServiceProvider
                 )
                 ->registerItem(
                     DashboardMenuItem::make()
-                        ->id('cms-plugins-ai-video-generator-model-management')
-                        ->parentId('cms-plugins-ai-video-generator')
-                        ->priority(9)
-                        ->name('Quản lý model AI')
-                        ->icon('ti ti-cpu')
-                        ->route('ai-video-generator.models.index')
-                        ->permissions('ai-video-generator.index')
-                )
-                ->registerItem(
-                    DashboardMenuItem::make()
                         ->id('cms-plugins-ai-video-generator-content-posts')
                         ->parentId('cms-plugins-ai-video-generator')
                         ->priority(10)
@@ -237,20 +243,10 @@ class AiVideoGeneratorServiceProvider extends ServiceProvider
                 )
                 ->registerItem(
                     DashboardMenuItem::make()
-                        ->id('cms-plugins-ai-video-generator-models')
-                        ->parentId('cms-plugins-ai-video-generator-model-management')
-                        ->priority(1)
-                        ->name('Model lớn')
-                        ->icon('ti ti-box')
-                        ->route('ai-video-generator.models.index')
-                        ->permissions('ai-video-generator.index')
-                )
-                ->registerItem(
-                    DashboardMenuItem::make()
                         ->id('cms-plugins-ai-video-generator-model-endpoints')
-                        ->parentId('cms-plugins-ai-video-generator-model-management')
-                        ->priority(2)
-                        ->name('Model con / Endpoint')
+                        ->parentId('cms-plugins-ai-video-generator')
+                        ->priority(9)
+                        ->name('Model AI / Endpoint')
                         ->icon('ti ti-api')
                         ->route('ai-video-generator.model-endpoints.index')
                         ->permissions('ai-video-generator.index')

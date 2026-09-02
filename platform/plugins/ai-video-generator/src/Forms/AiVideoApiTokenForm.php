@@ -19,6 +19,15 @@ class AiVideoApiTokenForm extends FormAbstract
             ->setValidatorClass(CreateAiVideoApiTokenRequest::class)
             ->columns()
             ->add(
+                'name',
+                TextField::class,
+                TextFieldOption::make()
+                    ->label('Tên tài khoản')
+                    ->required()
+                    ->maxLength(255)
+                    ->colspan(2)
+            )
+            ->add(
                 'token_api',
                 TextField::class,
                 TextFieldOption::make()

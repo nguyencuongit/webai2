@@ -13,7 +13,7 @@
             <div class="motion-models__viewport">
                 <div class="motion-models__grid" data-motion-carousel-track>
                     @foreach ($models as $index => $model)
-                        <button class="motion-model {{ $index === 0 ? 'is-selected' : '' }}" type="button" data-motion-model data-motion-model-name="{{ $model->name }}" data-motion-model-description="{{ $model->description }}" data-motion-model-price="{{ $model->price }}">
+                        <button class="motion-model {{ $index === 0 ? 'is-selected' : '' }}" type="button" data-motion-model data-motion-model-code="{{ $model->code }}" data-motion-model-name="{{ $model->name }}" data-motion-model-description="{{ $model->description }}" data-motion-model-price="{{ $model->price }}">
                             <div class="motion-model__image">
                                 <img src="{{ $model->image ? \Botble\Media\Facades\RvMedia::getImageUrl($model->image) : $sampleImage }}" alt="{{ $model->name }}">
                                 @if ($model->tag)
@@ -107,6 +107,7 @@
                 <div><dt>Thời gian xử lý ước tính</dt><dd>~ 8 phút</dd></div>
             </dl>
             <button class="motion-create" type="button">✧　Tạo video ngay</button>
+            <p class="motion-create-status" data-motion-create-status role="status" aria-live="polite"></p>
         </section>
     </div>
 </div>
@@ -265,5 +266,111 @@
             updateSelectedModel(initiallySelectedModel);
             updatePairCount();
         }
+
+        const createButton = document.querySelector('.motion-create');
+        const createStatus = document.querySelector('[data-motion-create-status]');
+        const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content;
+        const mediaUrl = @json(route('public.video-lab.media'));
+        const generateUrl = @json(route('public.video-lab.generate'));
+
+        const setCreateStatus = function (message, isError) {
+            if (!createStatus) {
+                return;
+            }
+
+            createStatus.textContent = message;
+            createStatus.classList.toggle('is-error', Boolean(isError));
+        };
+
+        const responseData = async function (response) {
+            const data = await response.json().catch(function () { return {}; });
+
+            if (!response.ok || data.success === false) {
+                const errors = data.errors ? Object.values(data.errors).flat().join(' ') : null;
+                throw new Error(errors || data.message || 'Không thể gửi yêu cầu tạo video.');
+            }
+
+            return data;
+        };
+
+        const uploadMedia = async function (file, field) {
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('field', field);
+
+            const response = await fetch(mediaUrl, {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    ...(csrfToken ? { 'X-CSRF-TOKEN': csrfToken } : {}),
+                },
+                body: formData,
+                credentials: 'same-origin',
+            });
+
+            return (await responseData(response)).data.url;
+        };
+
+        const createVideo = async function (imageUrl, videoUrl) {
+            const duration = document.querySelector('.motion-selects select')?.value || '10';
+            const model = document.querySelector('[data-motion-model].is-selected')?.dataset.motionModelCode || '';
+            const response = await fetch(generateUrl, {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRF-TOKEN': csrfToken } : {}),
+                },
+                body: JSON.stringify({
+                    model: model,
+                    image_url: imageUrl,
+                    video_url: videoUrl,
+                    duration: Number(duration) === 5 ? 5 : 10,
+                }),
+                credentials: 'same-origin',
+            });
+
+            return responseData(response);
+        };
+
+        createButton?.addEventListener('click', async function () {
+            const pairs = Array.from(document.querySelectorAll('.motion-table__row')).map(function (row) {
+                return {
+                    image: row.querySelector('input[type="file"][accept="image/*"]')?.files[0],
+                    video: row.querySelector('input[type="file"][accept="video/*"]')?.files[0],
+                };
+            }).filter(function (pair) {
+                return pair.image && pair.video;
+            });
+
+            if (!pairs.length) {
+                setCreateStatus('Vui lòng chọn ít nhất một cặp ảnh và video.', true);
+
+                return;
+            }
+
+            createButton.disabled = true;
+            setCreateStatus('Đang tải dữ liệu và tạo video...', false);
+
+            try {
+                const taskIds = [];
+
+                for (const [index, pair] of pairs.entries()) {
+                    setCreateStatus(`Đang xử lý cặp ${index + 1}/${pairs.length}...`, false);
+                    const [imageUrl, videoUrl] = await Promise.all([
+                        uploadMedia(pair.image, 'image_url'),
+                        uploadMedia(pair.video, 'video_url'),
+                    ]);
+                    const result = await createVideo(imageUrl, videoUrl);
+                    taskIds.push(result.data?.task_id);
+                }
+
+                setCreateStatus(`Đã tạo ${taskIds.length} task RoboNeo. Video sẽ tự cập nhật khi hoàn tất.`, false);
+            } catch (error) {
+                setCreateStatus(error instanceof Error ? error.message : 'Không thể tạo video.', true);
+            } finally {
+                createButton.disabled = false;
+            }
+        });
     });
 </script>

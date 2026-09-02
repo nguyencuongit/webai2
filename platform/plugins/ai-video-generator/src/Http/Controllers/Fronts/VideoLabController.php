@@ -82,7 +82,7 @@ class VideoLabController extends BaseController
             $response = $generationService->create($model, $data);
             $task = $response['data'] ?? $response;
         } catch (RequestException $exception) {
-            Log::warning('Cannot create AI video task from Magnific API.', [
+            Log::warning('Cannot create RoboNeo video task.', [
                 'model' => $model,
                 'status' => $exception->response?->status(),
                 'response' => $exception->response?->json(),

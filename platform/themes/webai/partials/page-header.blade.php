@@ -5,7 +5,11 @@
     $creditBalance = (int) ($customer?->credits_balance ?? 0);
     $displayName = $user?->name ?? $user?->email ?? 'Khách';
     $avatarUrl = $user?->avatar_url ?? null;
+    $displayName = $customer?->name ?? $customer?->email ?? '';
+    $avatarUrl = $customer?->avatar_url;
     $initial = mb_strtoupper(mb_substr($displayName, 0, 1));
+    $loginUrl = route('ai-video-generator.login', ['redirect' => url()->current()]);
+    $accountUrl = \Illuminate\Support\Facades\Route::has('customer.overview') ? route('customer.overview') : '#';
 @endphp
 
 <header class="webai-page-header">
@@ -38,16 +42,20 @@
             </svg>
         </button>
 
-        <button class="webai-page-header__profile" type="button">
-            <span class="webai-page-header__avatar">
-                @if ($avatarUrl)
-                    <img src="{{ $avatarUrl }}" alt="{{ $displayName }}">
-                @else
-                    {{ $initial }}
-                @endif
-            </span>
-            <span>{{ $displayName }}</span>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
-        </button>
+        @if ($customer)
+            <a class="webai-page-header__profile" href="{{ $accountUrl }}" title="{{ $customer->email }}">
+                <span class="webai-page-header__avatar">
+                    @if ($avatarUrl)
+                        <img src="{{ $avatarUrl }}" alt="{{ $displayName }}">
+                    @else
+                        {{ $initial }}
+                    @endif
+                </span>
+                <span>{{ $displayName }}</span>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
+            </a>
+        @else
+            <a class="webai-page-header__profile" href="{{ $loginUrl }}">Đăng nhập</a>
+        @endif
     </div>
 </header>

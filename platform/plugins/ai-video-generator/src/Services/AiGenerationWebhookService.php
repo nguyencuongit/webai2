@@ -18,9 +18,7 @@ class AiGenerationWebhookService
     public function __construct(
         protected AiGenerationTaskInterface $taskRepository,
         protected R2VideoStorageService $r2VideoStorage,
-    )
-    {
-    }
+    ) {}
 
     public function handle(array $webhookData)
     {
@@ -69,12 +67,16 @@ class AiGenerationWebhookService
             return $url;
         }
 
-        $temporaryPath = $temporaryBasePath . '.' . $this->fileExtension($url);
+        $temporaryPath = $temporaryBasePath.'.'.$this->fileExtension($url);
         $thumbnailPath = null;
         File::move($temporaryBasePath, $temporaryPath);
 
         try {
-            $response = Http::timeout(300)
+            $response = Http::withOptions([
+                // Generated RoboNeo media must not inherit a broken local
+                // HTTP(S)_PROXY from a queue worker.
+                'curl' => [CURLOPT_PROXY => ''],
+            ])->timeout(300)
                 ->sink($temporaryPath)
                 ->get($url);
 
@@ -94,7 +96,7 @@ class AiGenerationWebhookService
                     $this->mimeType($url),
                 );
 
-                $thumbnailPath = $temporaryBasePath . '.webp';
+                $thumbnailPath = $temporaryBasePath.'.webp';
 
                 return [
                     'url' => $storedVideo['url'],
@@ -217,5 +219,4 @@ class AiGenerationWebhookService
             default => null,
         };
     }
-
 }

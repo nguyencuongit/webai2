@@ -558,6 +558,7 @@
                 color: var(--webai-muted);
                 background: transparent;
                 cursor: pointer;
+                text-decoration: none;
             }
 
             .webai-page-header__icon-button svg {

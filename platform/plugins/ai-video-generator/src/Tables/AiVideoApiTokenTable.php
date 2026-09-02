@@ -29,12 +29,12 @@ class AiVideoApiTokenTable extends TableAbstract
             ])
             ->addColumns([
                 IdColumn::make(),
-                Column::make('token_api')->title('API token'),
+                Column::make('name')->title('Tên tài khoản'),
                 ActiveStatusColumn::make(),
                 CreatedAtColumn::make(),
             ])
             ->queryUsing(fn (Builder $query) => $query
-                ->select(['id', 'token_api', 'status', 'created_at'])
+                ->select(['id', 'name', 'status', 'created_at'])
                 ->latest('id'));
     }
 

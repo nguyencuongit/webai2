@@ -13,9 +13,7 @@ class MagnificApiCatalog
     {
         return Cache::remember(self::CACHE_KEY, now()->addMinutes(10), function (): array {
             return AiVideoModelEndpoint::query()
-                ->with('model:id,name,code,status')
                 ->where('status', true)
-                ->whereHas('model', fn ($query) => $query->where('status', true))
                 ->orderBy('name')
                 ->get()
                 ->sortBy('name', SORT_NATURAL | SORT_FLAG_CASE)
@@ -23,8 +21,8 @@ class MagnificApiCatalog
                     return [$endpoint->code => [
                         'name' => $endpoint->code,
                         'label' => $endpoint->name,
-                        'provider' => $endpoint->model->code,
-                        'parent' => $endpoint->model->name,
+                        'provider' => null,
+                        'parent' => null,
                         'price' => (float) $endpoint->price,
                         'api' => null,
                         'endpoint' => $endpoint->endpoint,

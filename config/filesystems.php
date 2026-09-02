@@ -71,6 +71,11 @@ return [
             'url' => env('R2_URL'),
             'endpoint' => env('R2_ENDPOINT'),
             'use_path_style_endpoint' => env('R2_USE_PATH_STYLE_ENDPOINT', false),
+            // Generated videos are uploaded by queue workers. Do not inherit
+            // a broken development HTTP(S)_PROXY for R2's S3 requests.
+            'http' => [
+                'proxy' => '',
+            ],
             'throw' => true,
             'report' => true,
         ],

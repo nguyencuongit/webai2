@@ -11,4 +11,6 @@ interface AiVideoModelEndpointInterface extends RepositoryInterface
      * @return Collection<int, \Botble\AiVideoGenerator\Models\AiVideoModelEndpoint>
      */
     public function getActiveForVideoLab(): Collection;
+
+    public function getActiveByCode(string $code): ?\Botble\AiVideoGenerator\Models\AiVideoModelEndpoint;
 }

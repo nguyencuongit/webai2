@@ -1,16 +1,16 @@
 <?php
 
-use Botble\Theme\Facades\Theme;
 use Botble\AiVideoGenerator\Http\Controllers\Fronts\CreditPackagePurchaseController;
 use Botble\AiVideoGenerator\Http\Controllers\Fronts\MyVideosController;
 use Botble\AiVideoGenerator\Http\Controllers\Fronts\VideoLabController;
 use Botble\AiVideoGenerator\Models\AiContentPost;
+use Botble\Theme\Facades\Theme;
 use Illuminate\Support\Facades\Route;
 
 // Change true to false to restore the normal theme routes below.
 if (false) {
-Route::get('/', function () {
-    return response(<<<'HTML'
+    Route::get('/', function () {
+        return response(<<<'HTML'
 <!doctype html>
 <html lang="vi">
 <head>
@@ -33,12 +33,12 @@ Route::get('/', function () {
 </body>
 </html>
 HTML
-    );
-})->name('public.home');
+        );
+    })->name('public.home');
 
-Route::any('/{path}', fn () => redirect('/'))->where('path', '.*');
+    Route::any('/{path}', fn () => redirect('/'))->where('path', '.*');
 
-return;
+    return;
 }
 
 Theme::registerRoutes(function (): void {
@@ -49,6 +49,7 @@ Theme::registerRoutes(function (): void {
     Route::get('image-studio', fn () => Theme::scope('image')->render())->name('public.studio-image');
     Route::get('video-lab', [VideoLabController::class, 'index'])->name('public.video-lab');
     Route::get('my-videos', [MyVideosController::class, 'index'])->name('public.my-videos');
+    Route::get('my-videos/tasks', [MyVideosController::class, 'tasks'])->name('public.my-videos.tasks');
     Route::post('video-lab/media', [VideoLabController::class, 'uploadMedia'])->name('public.video-lab.media');
     Route::post('video-lab/generate', [VideoLabController::class, 'generate'])->name('public.video-lab.generate');
     Route::get('video-lab/tasks', [VideoLabController::class, 'history'])->name('public.video-lab.tasks');

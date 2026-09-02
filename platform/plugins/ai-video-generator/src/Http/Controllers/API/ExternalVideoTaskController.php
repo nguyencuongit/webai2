@@ -46,18 +46,37 @@ class ExternalVideoTaskController extends BaseController
 
     public function webhook(Request $request, ExternalVideoTaskService $taskService): JsonResponse
     {
-        $payload = $request->validate([
-            'status' => ['required', 'string'],
-            'task_id' => ['required', 'string'],
-            'url_video' => ['required', 'url'],
-        ]);
+        try {
+            $payload = $request->validate([
+                'status' => ['required'],
+                'task_id' => ['required', 'string'],
+                'url_video' => ['nullable', 'url'],
+                'error' => ['nullable'],
+            ]);
 
-        $taskService->receiveWebhook($payload);
+            $taskService->receiveWebhook($payload);
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Webhook received',
-            'task_id' => $payload['task_id'],
-        ]);
+            return response()->json([
+                'success' => true,
+                'message' => 'Webhook received',
+                'task_id' => $payload['task_id'],
+            ]);
+        } catch (ValidationException $exception) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid webhook data',
+                'errors' => $exception->errors(),
+            ], 422);
+        } catch (Throwable $exception) {
+            Log::error('Cannot process external video webhook.', [
+                'exception' => $exception::class,
+                'message' => $exception->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Unable to process webhook',
+            ], 500);
+        }
     }
 }
