@@ -206,6 +206,12 @@ class ExternalVideoTaskService
                     return;
                 }
 
+                if ($this->isTransientAdmissionError($exception)) {
+                    $this->handleTransientAdmission($task, $attemptContext, $exception);
+
+                    return;
+                }
+
                 if ($this->isCredentialError($exception)) {
                     $this->apiTokenRepository->deactivate($tokenLease->tokenId);
                     $this->appendSubmissionHistory($task, [
@@ -272,6 +278,32 @@ class ExternalVideoTaskService
             'api_token_id' => $tokenId,
             'next_retry_at' => $nextRetryAt->toISOString(),
             'provider_code' => (string) $exception->protocolCode,
+        ]);
+    }
+
+    private function handleTransientAdmission(Model $task, array $attemptContext, Throwable $exception): void
+    {
+        $retryAt = now()->addSeconds($this->randomConfiguredDelay(
+            'transient_retry_min_seconds',
+            'transient_retry_max_seconds',
+            30,
+            90,
+        ));
+        $this->admissionCoordinator()->cooldownGlobal($retryAt);
+        $this->appendSubmissionHistory($task, [
+            ...$attemptContext,
+            'status' => 'transient_provider_failure',
+            'provider_code' => $this->exceptionCode($exception),
+            'global_cooldown_until' => $retryAt->toISOString(),
+            'at' => now()->toISOString(),
+        ]);
+        $this->scheduleAdmission($task, $retryAt, (int) ($attemptContext['attempt'] ?? 0));
+
+        Log::warning('Transient RoboNeo admission failure; task retained for a fresh retry.', [
+            'task_id' => $task->task_id,
+            'attempt' => $attemptContext['attempt'] ?? null,
+            'provider_code' => $this->exceptionCode($exception),
+            'next_retry_at' => $retryAt->toISOString(),
         ]);
     }
 
@@ -456,6 +488,22 @@ class ExternalVideoTaskService
         return in_array($code, ['missing_uid', 'missing_access_token', 'assigned_access_token_unavailable'], true)
             || str_starts_with($code, 'http_401_')
             || str_starts_with($code, 'http_403_');
+    }
+
+    private function isTransientAdmissionError(Throwable $exception): bool
+    {
+        $code = strtolower($this->exceptionCode($exception));
+
+        if (preg_match('/^http_(408|425|429|5\d\d)_/', $code) === 1) {
+            return true;
+        }
+
+        return in_array($code, [
+            'connection_failed',
+            'connect_timeout',
+            'request_timeout',
+            'temporarily_unavailable',
+        ], true);
     }
 
     private function carbon(mixed $value): ?Carbon

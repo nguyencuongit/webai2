@@ -180,6 +180,40 @@ class ExternalVideoTaskAdmissionTest extends TestCase
         Queue::assertPushed('Botble\AiVideoGenerator\Jobs\SubmitExternalRoboNeoTask', 2);
     }
 
+    public function test_transient_provider_gateway_failure_keeps_the_task_processing_until_admission_deadline(): void
+    {
+        Queue::fake();
+        Http::preventStrayRequests();
+        Http::fake(fn () => Http::response('media-bytes'));
+        Carbon::setTestNow('2026-09-03 12:00:00');
+
+        $task = $this->queuedTask('admission-test');
+        $roboNeo = $this->createMock(RoboNeoMotionApi::class);
+        $roboNeo->method('quote')->willThrowException(
+            new RoboNeoProtocolException(
+                'RoboNeo gateway timed out while initializing the workflow.',
+                'http_504_web_workflow_canvas_init_json',
+            ),
+        );
+
+        $service = $this->admissionService($task, $roboNeo);
+        $service->submitPendingRoboNeoTask($task);
+
+        $this->assertSame('PROCESSING', $task->status);
+        $this->assertSame('retry_scheduled', data_get($task->payload, 'roboneo.submission.state'));
+        $this->assertSame(1, data_get($task->payload, 'roboneo.submission.attempt'));
+        $this->assertSame(
+            'transient_provider_failure',
+            data_get($task->payload, 'roboneo.submission.history.0.status'),
+        );
+        $this->assertSame(
+            'http_504_web_workflow_canvas_init_json',
+            data_get($task->payload, 'roboneo.submission.history.0.provider_code'),
+        );
+        $this->assertArrayNotHasKey('result', $task->payload);
+        Queue::assertPushed('Botble\AiVideoGenerator\Jobs\SubmitExternalRoboNeoTask');
+    }
+
     public function test_deadline_emits_one_normalized_failure_without_exposing_6003(): void
     {
         Queue::fake();

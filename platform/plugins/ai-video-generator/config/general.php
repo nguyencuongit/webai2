@@ -33,6 +33,8 @@ return [
             'token_cooldown_max_seconds' => (int) env('ROBONEO_TOKEN_COOLDOWN_MAX_SECONDS', 600),
             'global_cooldown_min_seconds' => (int) env('ROBONEO_GLOBAL_COOLDOWN_MIN_SECONDS', 45),
             'global_cooldown_max_seconds' => (int) env('ROBONEO_GLOBAL_COOLDOWN_MAX_SECONDS', 90),
+            'transient_retry_min_seconds' => (int) env('ROBONEO_TRANSIENT_RETRY_MIN_SECONDS', 30),
+            'transient_retry_max_seconds' => (int) env('ROBONEO_TRANSIENT_RETRY_MAX_SECONDS', 90),
             'no_token_retry_seconds' => (int) env('ROBONEO_NO_TOKEN_RETRY_SECONDS', 30),
         ],
     ],
