@@ -11,7 +11,10 @@ class ExternalApiToken
 {
     public function handle(Request $request, Closure $next): Response
     {
-        $expectedToken = (string) setting('access_token');
+        $expectedToken = (string) (
+            config('plugins.ai-video-generator.general.external_api_token')
+            ?: setting('access_token')
+        );
         $token = (string) $request->header('token', '');
 
         if ($expectedToken === '' || $token === '' || ! hash_equals($expectedToken, $token)) {

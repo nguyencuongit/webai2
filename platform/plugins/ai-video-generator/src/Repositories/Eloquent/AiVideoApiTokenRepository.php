@@ -8,6 +8,19 @@ use Botble\Support\Repositories\Eloquent\RepositoriesAbstract;
 
 class AiVideoApiTokenRepository extends RepositoriesAbstract implements AiVideoApiTokenInterface
 {
+    public function getActiveTokens(): array
+    {
+        return AiVideoApiToken::query()
+            ->where('status', true)
+            ->oldest('id')
+            ->get(['id', 'token_api'])
+            ->map(static fn (AiVideoApiToken $token): array => [
+                'id' => (int) $token->getKey(),
+                'token_api' => (string) $token->token_api,
+            ])
+            ->all();
+    }
+
     public function getLatestActiveToken(): ?array
     {
         $token = AiVideoApiToken::query()

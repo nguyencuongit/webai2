@@ -11,7 +11,7 @@ class ExternalVideoTaskRepository extends RepositoriesAbstract implements Extern
 {
     public function __construct(ExternalVideoTask $model)
     {
-        $this->model = $model;
+        parent::__construct($model);
     }
 
     public function findByTaskId(string $taskId): ?Model

@@ -11,6 +11,8 @@ class MotionVideoTrimmer
 {
     public const MAX_DURATION_SECONDS = 10;
 
+    public const DURATION_TOLERANCE_SECONDS = 0.1;
+
     /**
      * Returns the original path when it is already 10 seconds or shorter.
      * Longer videos are re-encoded into a temporary MP4 file.
@@ -67,7 +69,7 @@ class MotionVideoTrimmer
             throw new RuntimeException('Cannot trim the RoboNeo input video to 10 seconds.');
         }
 
-        if ($this->duration($outputPath) > self::MAX_DURATION_SECONDS) {
+        if ($this->duration($outputPath) > self::MAX_DURATION_SECONDS + self::DURATION_TOLERANCE_SECONDS) {
             File::delete($outputPath);
 
             throw new RuntimeException('The trimmed RoboNeo input video is longer than 10 seconds.');
