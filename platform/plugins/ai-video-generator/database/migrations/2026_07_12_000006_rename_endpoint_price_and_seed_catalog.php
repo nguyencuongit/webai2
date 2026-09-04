@@ -9,15 +9,22 @@ use Illuminate\Support\Facades\Schema;
 return new class () extends Migration {
     public function up(): void
     {
-        Schema::table('ai_video_model_endpoints', function (Blueprint $table): void {
-            $table->decimal('price', 12, 4)->default(0)->after('options');
-        });
+        if (! Schema::hasColumn('ai_video_model_endpoints', 'price')) {
+            Schema::table('ai_video_model_endpoints', function (Blueprint $table): void {
+                $table->decimal('price', 12, 4)->default(0)->after('options');
+            });
+        }
 
-        DB::table('ai_video_model_endpoints')->update(['price' => DB::raw('credits_per_second')]);
+        $legacyPriceColumn = collect(['credits_per_second', 'credits'])
+            ->first(fn (string $column): bool => Schema::hasColumn('ai_video_model_endpoints', $column));
 
-        Schema::table('ai_video_model_endpoints', function (Blueprint $table): void {
-            $table->dropColumn('credits_per_second');
-        });
+        if ($legacyPriceColumn) {
+            DB::table('ai_video_model_endpoints')->update(['price' => DB::raw($legacyPriceColumn)]);
+
+            Schema::table('ai_video_model_endpoints', function (Blueprint $table) use ($legacyPriceColumn): void {
+                $table->dropColumn($legacyPriceColumn);
+            });
+        }
 
         $catalog = app(MagnificApiCatalog::class);
 
@@ -67,14 +74,18 @@ return new class () extends Migration {
 
     public function down(): void
     {
-        Schema::table('ai_video_model_endpoints', function (Blueprint $table): void {
-            $table->decimal('credits_per_second', 12, 4)->default(0)->after('options');
-        });
+        if (! Schema::hasColumn('ai_video_model_endpoints', 'credits')) {
+            Schema::table('ai_video_model_endpoints', function (Blueprint $table): void {
+                $table->decimal('credits', 12, 4)->default(0)->after('options');
+            });
+        }
 
-        DB::table('ai_video_model_endpoints')->update(['credits_per_second' => DB::raw('price')]);
+        if (Schema::hasColumn('ai_video_model_endpoints', 'price')) {
+            DB::table('ai_video_model_endpoints')->update(['credits' => DB::raw('price')]);
 
-        Schema::table('ai_video_model_endpoints', function (Blueprint $table): void {
-            $table->dropColumn('price');
-        });
+            Schema::table('ai_video_model_endpoints', function (Blueprint $table): void {
+                $table->dropColumn('price');
+            });
+        }
     }
 };

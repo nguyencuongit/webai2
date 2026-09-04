@@ -5,7 +5,11 @@ namespace Botble\AiVideoGenerator\Api\RoboNeo;
 use GuzzleHttp\Cookie\CookieJar;
 use GuzzleHttp\Cookie\SetCookie;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\RequestException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+use Throwable;
 
 /**
  * Low-level client for the RoboNeo internal HTTP protocol.
@@ -79,14 +83,13 @@ class RoboNeoApiClient
 
     public function strategyPolicy(array $policy, string $suffix): array
     {
-        $response = $this->request()->get(rtrim($this->setting('hosts.strategy'), '/').'/upload/policy', [
+        $url = rtrim($this->setting('hosts.strategy'), '/').'/upload/policy';
+        $response = $this->send('strategy_upload_policy', fn (PendingRequest $request): Response => $request->get($url, [
             'app' => 'RoboNeo', 'count' => 1, 'sig' => $policy['sig'] ?? '',
             'sigTime' => $policy['sigTime'] ?? $policy['sig_time'] ?? '',
             'sigVersion' => $policy['sigVersion'] ?? $policy['sig_version'] ?? '1.3',
             'suffix' => $suffix, 'type' => 'roboneo_private_web', 'version' => '2',
-        ]);
-
-        $response->throw();
+        ]));
 
         return $response->json() ?? [];
     }
@@ -142,17 +145,24 @@ class RoboNeoApiClient
         return (int) ($item['cost'] ?? $item['carrots'] ?? 0);
     }
 
-    public function executeMotion(string $roomId, string $nodeId, string $prompt, string $imageUrl, string $videoUrl): string
-    {
+    public function executeMotion(
+        string $roomId,
+        string $nodeId,
+        string $prompt,
+        string $imageUrl,
+        string $videoUrl,
+        ?string $traceId = null,
+        string|int|null $seed = null,
+    ): string {
         $apiName = $this->setting('motion.api_name');
         $data = $this->ai('nodeexecute', '/roboneo/sync/request/nodeexecute', ['room_id' => $roomId, 'node_id' => $nodeId, 'node_list_array' => [[[
             'name' => $apiName, 'tree_id' => $this->setting('motion.tree_id'),
             'tool_abstract_name' => ['en' => 'Motion Control', 'cn' => 'Motion Control'], 'node_id' => $nodeId,
             'parameters' => [
                 'prompt' => $prompt, 'quality' => $this->setting('motion.quality'), 'image_url' => $imageUrl,
-                'video_url' => $videoUrl, 'random' => RoboNeoIdentity::seed(),
+                'video_url' => $videoUrl, 'random' => $seed ?? RoboNeoIdentity::seed(),
             ],
-        ]]]]);
+        ]]]], traceId: $traceId);
         $taskId = $this->findScalarByKeys($data, ['task_id', 'taskId']) ?? ($data['task_ids'][0] ?? null);
 
         if (! is_scalar($taskId) || (string) $taskId === '') {
@@ -197,11 +207,10 @@ class RoboNeoApiClient
     private function resolveUid(): string
     {
         $url = rtrim($this->setting('hosts.account_api'), '/').'/users/show_current';
-        $response = $this->request()->get($url, [
+        $response = $this->send('resolve_uid', fn (PendingRequest $request): Response => $request->get($url, [
             ...$this->accountParams(), 'mt_g' => $this->context->mtG, 'sid' => $this->context->sid,
             'access_token' => $this->accessToken,
-        ]);
-        $response->throw();
+        ]));
         $payload = $response->json() ?? [];
         $data = $payload['response']['user'] ?? $payload['response'] ?? $payload['data']['user'] ?? $payload['data'] ?? $payload;
         $uid = (string) ($data['id'] ?? $data['uid'] ?? '');
@@ -213,17 +222,17 @@ class RoboNeoApiClient
         return $uid;
     }
 
-    private function ai(string $operation, string $path, array $fields, string $position = '/ai_flow'): array
+    private function ai(string $operation, string $path, array $fields, string $position = '/ai_flow', ?string $traceId = null): array
     {
         $parameter = [
             'token' => $this->setting('credentials.app_token'), 'gid' => $this->context->gid, 'uid' => $this->context->uid,
-            'trace_id' => RoboNeoIdentity::traceId(), 'client_id' => $this->setting('client.id'),
+            'trace_id' => $traceId ?: RoboNeoIdentity::traceId(), 'client_id' => $this->setting('client.id'),
             'app_scene' => $this->setting('client.scene'), 'area_code' => $this->setting('client.area_code'),
             'lang' => $this->setting('client.language'), 'extra' => ['big_data_patch' => ['position_type' => $position]],
             'path_scene' => $operation, ...$fields,
         ];
-        $response = $this->request()->post(rtrim($this->setting('hosts.ai_engine'), '/').$path, ['parameter' => $parameter]);
-        $response->throw();
+        $url = rtrim($this->setting('hosts.ai_engine'), '/').$path;
+        $response = $this->send($operation, fn (PendingRequest $request): Response => $request->post($url, ['parameter' => $parameter]));
         $payload = $response->json() ?? [];
 
         if ((int) ($payload['error_code'] ?? -1) !== 0) {
@@ -241,8 +250,9 @@ class RoboNeoApiClient
 
     private function webPost(string $path, array $fields): array
     {
-        $response = $this->request()->post(rtrim($this->setting('hosts.web_api'), '/').$path, [...$this->webParams(), ...$fields]);
-        $response->throw();
+        $url = rtrim($this->setting('hosts.web_api'), '/').$path;
+        $stage = 'web_'.trim((string) preg_replace('/[^a-z0-9]+/i', '_', $path), '_');
+        $response = $this->send($stage, fn (PendingRequest $request): Response => $request->post($url, [...$this->webParams(), ...$fields]));
         $payload = $response->json() ?? [];
 
         if ((int) ($payload['code'] ?? -1) !== 0) {
@@ -252,8 +262,67 @@ class RoboNeoApiClient
         return is_array($payload['data'] ?? null) ? $payload['data'] : [];
     }
 
+    private function send(string $stage, callable $callback): Response
+    {
+        $attempts = 0;
+
+        try {
+            $request = $this->request()
+                ->beforeSending(function () use (&$attempts): void {
+                    $attempts++;
+                })
+                ->retry(
+                    $this->retryDelays(),
+                    when: function (Throwable $exception) use ($stage, &$attempts): bool {
+                        if (! $this->isConnectFail($exception)) {
+                            return false;
+                        }
+
+                        Log::warning('Transient RoboNeo gateway failure.', [
+                            'stage' => $stage,
+                            'attempt' => $attempts,
+                            'status' => 503,
+                            'host' => $this->requestHost($exception),
+                        ]);
+
+                        return true;
+                    },
+                );
+
+            return $callback($request)->throw();
+        } catch (RequestException $exception) {
+            $status = $exception->response->status();
+            $host = $this->requestHost($exception);
+            $code = sprintf('http_%d_%s', $status, strtolower($stage));
+            $message = sprintf(
+                'RoboNeo request [%s] failed after %d attempt(s) with HTTP %d%s at %s.',
+                $stage,
+                max(1, $attempts),
+                $status,
+                $this->isConnectFail($exception) ? ' (CONNECT FAIL)' : '',
+                $host ?: 'unknown-host',
+            );
+
+            throw new RoboNeoProtocolException($message, $code, [
+                'stage' => $stage,
+                'status' => $status,
+                'host' => $host,
+                'attempts' => max(1, $attempts),
+            ]);
+        }
+    }
+
     private function request(): PendingRequest
     {
+        $curlOptions = [CURLOPT_PROXY => ''];
+        $ipFamily = strtolower((string) data_get($this->settings, 'http.ip_family', 'auto'));
+
+        if ($ipFamily === 'ipv4') {
+            $curlOptions[CURLOPT_IPRESOLVE] = CURL_IPRESOLVE_V4;
+        } elseif ($ipFamily === 'ipv6') {
+            $curlOptions[CURLOPT_IPRESOLVE] = CURL_IPRESOLVE_V6;
+        }
+
         return Http::withHeaders([
             'access-token' => $this->accessToken, 'accept' => 'application/json, text/plain, */*',
             'origin' => 'https://www.roboneo.com', 'referer' => 'https://www.roboneo.com/',
@@ -265,10 +334,39 @@ class RoboNeoApiClient
             'cookies' => $this->cookieJar,
             // CURLOPT_PROXY must be explicit here. An empty Guzzle proxy array
             // is merged with the HTTP(S)_PROXY defaults in CLI workers.
-            'curl' => [
-                CURLOPT_PROXY => '',
-            ],
+            'curl' => $curlOptions,
         ])->connectTimeout(20)->timeout(120);
+    }
+
+    private function retryDelays(): array
+    {
+        $delays = data_get(
+            $this->settings,
+            'http.retry_delays_ms',
+            config('plugins.ai-video-generator.general.roboneo.http.retry_delays_ms', [1000, 3000]),
+        );
+
+        if (! is_array($delays) || count($delays) !== 2) {
+            return [1000, 3000];
+        }
+
+        return array_map(static fn ($delay): int => max(0, (int) $delay), $delays);
+    }
+
+    private function isConnectFail(Throwable $exception): bool
+    {
+        return $exception instanceof RequestException
+            && $exception->response->status() === 503
+            && str_contains(strtoupper($exception->response->body()), 'CONNECT FAIL');
+    }
+
+    private function requestHost(Throwable $exception): ?string
+    {
+        if (! $exception instanceof RequestException) {
+            return null;
+        }
+
+        return parse_url((string) $exception->response->effectiveUri(), PHP_URL_HOST) ?: null;
     }
 
     private function webParams(): array

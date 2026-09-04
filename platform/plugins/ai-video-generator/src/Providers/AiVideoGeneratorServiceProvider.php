@@ -26,6 +26,9 @@ use Botble\AiVideoGenerator\Services\AiGenerationWebhookService;
 use Botble\AiVideoGenerator\Services\CreditPackagePaymentCompletionService;
 use Botble\AiVideoGenerator\Services\CreditPackagePurchaseService;
 use Botble\AiVideoGenerator\Services\CustomerCreditService;
+use Botble\AiVideoGenerator\Services\RoboNeo\RoboNeoTaskPipelineService;
+use Botble\AiVideoGenerator\Services\RoboNeo\Sources\CustomerRoboNeoTaskSource;
+use Botble\AiVideoGenerator\Services\RoboNeo\Sources\ExternalRoboNeoTaskSource;
 use Botble\AiVideoGenerator\Services\VideoLabDataService;
 use Botble\Base\Facades\BaseHelper;
 use Botble\Base\Facades\DashboardMenu;
@@ -64,6 +67,9 @@ class AiVideoGeneratorServiceProvider extends ServiceProvider
         $this->app->singleton(CreditPackagePurchaseService::class);
         $this->app->singleton(CreditPackagePaymentCompletionService::class);
         $this->app->singleton(VideoLabDataService::class);
+        $this->app->singleton(RoboNeoTaskPipelineService::class);
+        $this->app->singleton(CustomerRoboNeoTaskSource::class);
+        $this->app->singleton(ExternalRoboNeoTaskSource::class);
 
         $this->app->bind(AiGenerationTaskInterface::class, function () {
             return new AiGenerationTaskRepository(new AiGenerationTask);

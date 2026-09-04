@@ -7,7 +7,7 @@ use Botble\AiVideoGenerator\Services\RoboNeo\Sources\ExternalRoboNeoTaskSource;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 
-class PollExternalRoboNeoTask implements ShouldQueue
+class SubmitExternalRoboNeoTask implements ShouldQueue
 {
     use Queueable;
 
@@ -17,6 +17,6 @@ class PollExternalRoboNeoTask implements ShouldQueue
 
     public function handle(RoboNeoTaskPipelineService $pipeline, ExternalRoboNeoTaskSource $source): void
     {
-        $pipeline->poll($source, $this->taskId);
+        $pipeline->submit($source, $this->taskId);
     }
 }

@@ -69,6 +69,8 @@ class RoboNeoMotionApi
             'image_asset' => $image,
             'video_asset' => $video,
             'session_data' => $client->contextSnapshot(),
+            'submission_trace_id' => RoboNeoIdentity::traceId(),
+            'submission_seed' => RoboNeoIdentity::seed(),
         ];
     }
 
@@ -78,7 +80,17 @@ class RoboNeoMotionApi
         $prompt = $this->prompt($settings);
         $context = RoboNeoContext::fromArray($quotedTask['session_data'] ?? []);
         $client = new RoboNeoApiClient($context, $accessToken, $settings);
-        $taskId = $client->executeMotion($quotedTask['room_id'], $quotedTask['motion_node_id'], $prompt, $quotedTask['image_asset']['url'], $quotedTask['video_asset']['url']);
+        $taskId = $client->executeMotion(
+            $quotedTask['room_id'],
+            $quotedTask['motion_node_id'],
+            $prompt,
+            $quotedTask['image_asset']['url'],
+            $quotedTask['video_asset']['url'],
+            $quotedTask['submission_trace_id'] ?? null,
+            is_string($quotedTask['submission_seed'] ?? null) || is_int($quotedTask['submission_seed'] ?? null)
+                ? $quotedTask['submission_seed']
+                : null,
+        );
 
         return ['task_id' => $taskId, 'session_data' => $client->contextSnapshot()];
     }
