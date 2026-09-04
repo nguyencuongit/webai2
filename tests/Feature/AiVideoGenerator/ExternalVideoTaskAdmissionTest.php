@@ -11,6 +11,8 @@ use Botble\AiVideoGenerator\Repositories\Interfaces\ExternalVideoTaskInterface;
 use Botble\AiVideoGenerator\Services\Api\ExternalVideoTaskService;
 use Botble\AiVideoGenerator\Services\R2\R2VideoStorageService;
 use Botble\AiVideoGenerator\Services\RoboNeo\MotionVideoTrimmer;
+use Botble\AiVideoGenerator\Services\RoboNeo\RoboNeoTaskPipelineService;
+use Botble\AiVideoGenerator\Services\RoboNeo\Sources\ExternalRoboNeoTaskSource;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
@@ -27,6 +29,9 @@ require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Repos
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/MotionVideoTrimmer.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/RoboNeoTokenLease.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/RoboNeoAdmissionCoordinator.php';
+require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/Contracts/RoboNeoTaskSource.php';
+require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/RoboNeoTaskPipelineService.php';
+require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/Sources/ExternalRoboNeoTaskSource.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/R2/R2VideoStorageService.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Jobs/PollExternalRoboNeoTask.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Jobs/RetryExternalRoboNeoSubmission.php';
@@ -292,11 +297,23 @@ class ExternalVideoTaskAdmissionTest extends TestCase
         $roboNeo->method('submit')->willThrowException(
             new RoboNeoProtocolException('The system is busy. Please try again later.', '6003'),
         );
-        $service = $this->admissionService($task, $roboNeo);
+        $tokens = $this->createMock(AiVideoApiTokenInterface::class);
+        $tokens->method('getActiveTokens')->willReturn([
+            ['id' => 9, 'token_api' => 'token-nine'],
+            ['id' => 10, 'token_api' => 'token-ten'],
+        ]);
         $tasks = $this->createMock(ExternalVideoTaskInterface::class);
         $tasks->method('findByTaskId')->willReturn($task);
+        $trimmer = $this->createMock(MotionVideoTrimmer::class);
+        $trimmer->method('trim')->willReturnCallback(static fn (string $path): string => $path);
+        $pipeline = new RoboNeoTaskPipelineService(
+            $roboNeo,
+            $tokens,
+            $this->createMock(R2VideoStorageService::class),
+        );
+        $source = new ExternalRoboNeoTaskSource($tasks, $trimmer);
 
-        (new RetryExternalRoboNeoSubmission('admission-test', 4))->handle($service, $tasks);
+        (new RetryExternalRoboNeoSubmission('admission-test', 4))->handle($pipeline, $source);
 
         $this->assertSame('PROCESSING', $task->status);
         $this->assertSame(1, data_get($task->payload, 'roboneo.submission.attempt'));

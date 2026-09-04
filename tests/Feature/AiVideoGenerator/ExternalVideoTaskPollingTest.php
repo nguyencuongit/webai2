@@ -11,6 +11,7 @@ use Botble\AiVideoGenerator\Services\R2\R2VideoStorageService;
 use Botble\AiVideoGenerator\Services\RoboNeo\MotionVideoTrimmer;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Api/RoboNeo/RoboNeoProtocolException.php';
@@ -21,6 +22,9 @@ require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Repos
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/MotionVideoTrimmer.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/RoboNeoTokenLease.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/RoboNeoAdmissionCoordinator.php';
+require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/Contracts/RoboNeoTaskSource.php';
+require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/RoboNeoTaskPipelineService.php';
+require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/Sources/ExternalRoboNeoTaskSource.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/R2/R2VideoStorageService.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Jobs/PollExternalRoboNeoTask.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Jobs/RetryExternalRoboNeoSubmission.php';
@@ -31,6 +35,7 @@ class ExternalVideoTaskPollingTest extends TestCase
 {
     public function test_polling_keeps_using_the_token_that_created_the_provider_task(): void
     {
+        Queue::fake();
         $task = new PollingInMemoryExternalVideoTask;
         $task->forceFill([
             'task_id' => 'external-task-4',
@@ -75,10 +80,12 @@ class ExternalVideoTaskPollingTest extends TestCase
             'token_api' => 'different-latest-token',
         ]);
 
+        $tasks = $this->createMock(ExternalVideoTaskInterface::class);
+        $tasks->method('findByTaskId')->willReturn($task);
         $service = new ExternalVideoTaskService(
             $roboNeo,
             $tokens,
-            $this->createMock(ExternalVideoTaskInterface::class),
+            $tasks,
             $this->createMock(MotionVideoTrimmer::class),
             $this->createMock(R2VideoStorageService::class),
         );
@@ -88,7 +95,7 @@ class ExternalVideoTaskPollingTest extends TestCase
         $this->assertSame('updated', data_get($task->payload, 'roboneo.session_data.poll_marker'));
     }
 
-    public function test_a_successful_provider_task_does_not_deactivate_a_still_usable_token(): void
+    public function test_a_successful_provider_task_deactivates_the_exact_token_before_finishing(): void
     {
         Http::preventStrayRequests();
         Http::fake(fn () => Http::response('completed-video-bytes'));
@@ -118,7 +125,10 @@ class ExternalVideoTaskPollingTest extends TestCase
         $assignedToken = new PollingInMemoryApiToken;
         $assignedToken->forceFill(['id' => 10, 'token_api' => 'assigned-access-token', 'status' => true]);
         $tokens->method('findById')->willReturn($assignedToken);
-        $tokens->expects($this->never())->method('deactivate');
+        $tokens->expects($this->once())
+            ->method('deactivate')
+            ->with(10)
+            ->willReturnCallback(static fn (): bool => $task->status === 'PROCESSING');
 
         $tasks = $this->createMock(ExternalVideoTaskInterface::class);
         $tasks->method('findByTaskId')->willReturn($task);
@@ -139,7 +149,7 @@ class ExternalVideoTaskPollingTest extends TestCase
         $service->pollRoboNeo($task);
 
         $this->assertSame('COMPLETED', $task->status);
-        $this->assertArrayNotHasKey('deactivated_api_token_id', data_get($task->payload, 'roboneo', []));
+        $this->assertSame(10, data_get($task->payload, 'roboneo.deactivated_api_token_id'));
     }
 
     public function test_charge_failed_deactivates_the_token_before_finishing_the_task(): void

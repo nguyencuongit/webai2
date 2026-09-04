@@ -4,16 +4,17 @@ namespace Botble\AiVideoGenerator\Services;
 
 use Botble\AiVideoGenerator\Api\RoboNeo\RoboNeoMotionApi;
 use Botble\AiVideoGenerator\Api\RoboNeo\RoboNeoProtocolException;
-use Botble\AiVideoGenerator\Jobs\PollRoboNeoTask;
 use Botble\AiVideoGenerator\Repositories\Interfaces\AiGenerationTaskInterface;
 use Botble\AiVideoGenerator\Repositories\Interfaces\AiVideoApiTokenInterface;
 use Botble\AiVideoGenerator\Repositories\Interfaces\AiVideoModelEndpointInterface;
 use Botble\AiVideoGenerator\Services\RoboNeo\MotionVideoTrimmer;
-use Illuminate\Support\Facades\File;
-use Illuminate\Support\Facades\Storage;
+use Botble\AiVideoGenerator\Services\RoboNeo\Sources\CustomerRoboNeoTaskSource;
+use Illuminate\Support\Str;
 
 class AiGenerationService
 {
+    protected CustomerRoboNeoTaskSource $customerSource;
+
     public function __construct(
         protected RoboNeoMotionApi $roboNeo,
         protected AiGenerationTaskInterface $taskRepository,
@@ -21,7 +22,14 @@ class AiGenerationService
         protected AiVideoModelEndpointInterface $endpointRepository,
         protected MotionVideoTrimmer $videoTrimmer,
         protected CustomerCreditService $customerCreditService,
-    ) {}
+        ?CustomerRoboNeoTaskSource $customerSource = null,
+    ) {
+        $this->customerSource = $customerSource ?? new CustomerRoboNeoTaskSource(
+            $taskRepository,
+            $videoTrimmer,
+            $customerCreditService,
+        );
+    }
 
     public function create(string $name, array|string $payload): array
     {
@@ -56,38 +64,28 @@ class AiGenerationService
 
     private function createRoboNeoTask(array $payload, int $customerId, int $credits): array
     {
-        $apiToken = $this->apiTokenRepository->getLatestActiveToken();
-        $accessToken = trim((string) ($apiToken['token_api'] ?? ''));
-
-        if ($accessToken === '') {
-            throw new RoboNeoProtocolException('An active RoboNeo access token is required.', 'missing_access_token');
-        }
-
-        $sourceVideoPath = $this->localPublicPath((string) ($payload['video_url'] ?? ''));
-        $videoPath = $this->videoTrimmer->trim($sourceVideoPath);
-
-        try {
-            $task = $this->roboNeo->generate(
-                $this->localPublicPath((string) ($payload['image_url'] ?? '')),
-                $videoPath,
-                $accessToken,
-                (int) ($payload['duration'] ?? 10),
-            );
-        } finally {
-            if ($videoPath !== $sourceVideoPath) {
-                File::delete($videoPath);
-            }
-        }
-        $response = ['data' => [...$task, 'status' => 'PROCESSING', 'generated' => []]];
+        $taskId = (string) Str::ulid();
+        $response = ['data' => ['task_id' => $taskId, 'status' => 'PROCESSING', 'generated' => []]];
 
         $storedTask = $this->taskRepository->storeFromResponse($response, [
             ...$payload,
             'roboneo' => [
-                'room_id' => $task['room_id'],
-                'session_data' => $task['session_data'],
+                'source' => $this->customerSource->key(),
+                'submission' => [
+                    'attempt' => 0,
+                    'state' => 'queued',
+                    'queued_at' => now()->toISOString(),
+                    'deadline_at' => now()->addMinutes((int) config(
+                        'plugins.ai-video-generator.general.roboneo.motion.admission_deadline_minutes',
+                        50,
+                    ))->toISOString(),
+                    'history' => [],
+                ],
             ],
             'billing' => [
+                'customer_id' => $customerId,
                 'credits_debited' => $credits,
+                'debited_at' => now()->toISOString(),
                 'refunded_at' => null,
             ],
         ], $customerId);
@@ -96,8 +94,24 @@ class AiGenerationService
             throw new RoboNeoProtocolException('Cannot persist RoboNeo task.', 'task_persistence_failed');
         }
 
-        PollRoboNeoTask::dispatch($task['task_id'])
-            ->delay(now()->addSeconds((int) config('plugins.ai-video-generator.general.roboneo.motion.poll_interval_seconds', 5)));
+        try {
+            $this->customerSource->dispatchSubmission($taskId);
+        } catch (\Throwable $exception) {
+            $storedPayload = is_array($storedTask->payload ?? null) ? $storedTask->payload : [];
+            $storedPayload['billing']['refunded_at'] = now()->toISOString();
+            $storedPayload['roboneo']['error'] = [
+                'type' => 'roboneo_error',
+                'code' => 'QUEUE_DISPATCH_FAILED',
+                'message' => 'Không thể đưa yêu cầu RoboNeo vào hàng chờ.',
+            ];
+            $storedTask->update([
+                'status' => 'FAILED',
+                'generated' => [$storedPayload['roboneo']['error']],
+                'payload' => $storedPayload,
+            ]);
+
+            throw $exception;
+        }
 
         return $response;
     }
@@ -123,24 +137,5 @@ class AiGenerationService
         }
 
         return $model;
-    }
-
-    private function localPublicPath(string $url): string
-    {
-        $path = (string) parse_url($url, PHP_URL_PATH);
-        $publicUrl = rtrim((string) (parse_url(Storage::disk('public')->url(''), PHP_URL_PATH) ?: ''), '/');
-
-        if ($publicUrl === '' || ! str_starts_with($path, $publicUrl.'/')) {
-            throw new RoboNeoProtocolException('RoboNeo media must be uploaded through the video-lab media endpoint.', 'invalid_media_url');
-        }
-
-        $relativePath = ltrim(substr($path, strlen($publicUrl)), '/');
-        $filePath = Storage::disk('public')->path($relativePath);
-
-        if (! is_file($filePath)) {
-            throw new RoboNeoProtocolException('RoboNeo uploaded media file was not found.', 'missing_media_file');
-        }
-
-        return $filePath;
     }
 }

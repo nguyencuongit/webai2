@@ -2,8 +2,8 @@
 
 namespace Botble\AiVideoGenerator\Jobs;
 
-use Botble\AiVideoGenerator\Repositories\Interfaces\ExternalVideoTaskInterface;
-use Botble\AiVideoGenerator\Services\Api\ExternalVideoTaskService;
+use Botble\AiVideoGenerator\Services\RoboNeo\RoboNeoTaskPipelineService;
+use Botble\AiVideoGenerator\Services\RoboNeo\Sources\ExternalRoboNeoTaskSource;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 
@@ -15,14 +15,8 @@ class SubmitExternalRoboNeoTask implements ShouldQueue
 
     public function __construct(public readonly string $taskId) {}
 
-    public function handle(ExternalVideoTaskService $taskService, ExternalVideoTaskInterface $taskRepository): void
+    public function handle(RoboNeoTaskPipelineService $pipeline, ExternalRoboNeoTaskSource $source): void
     {
-        $task = $taskRepository->findByTaskId($this->taskId);
-
-        if (! $task || $taskService->isTerminal($task)) {
-            return;
-        }
-
-        $taskService->submitPendingRoboNeoTask($task);
+        $pipeline->submit($source, $this->taskId);
     }
 }
