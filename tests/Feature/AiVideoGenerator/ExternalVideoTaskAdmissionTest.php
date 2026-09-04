@@ -5,7 +5,10 @@ namespace Tests\Feature\AiVideoGenerator;
 use Botble\AiVideoGenerator\Api\RoboNeo\RoboNeoMotionApi;
 use Botble\AiVideoGenerator\Api\RoboNeo\RoboNeoProtocolException;
 use Botble\AiVideoGenerator\Jobs\PollExternalRoboNeoTask;
+use Botble\AiVideoGenerator\Jobs\PollRoboNeoTask;
 use Botble\AiVideoGenerator\Jobs\RetryExternalRoboNeoSubmission;
+use Botble\AiVideoGenerator\Jobs\SubmitCustomerRoboNeoTask;
+use Botble\AiVideoGenerator\Jobs\SubmitExternalRoboNeoTask;
 use Botble\AiVideoGenerator\Repositories\Interfaces\AiVideoApiTokenInterface;
 use Botble\AiVideoGenerator\Repositories\Interfaces\ExternalVideoTaskInterface;
 use Botble\AiVideoGenerator\Services\Api\ExternalVideoTaskService;
@@ -36,6 +39,8 @@ require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Servi
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Jobs/PollExternalRoboNeoTask.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Jobs/RetryExternalRoboNeoSubmission.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Jobs/SubmitExternalRoboNeoTask.php';
+require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Jobs/SubmitCustomerRoboNeoTask.php';
+require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Jobs/PollRoboNeoTask.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/Api/ExternalVideoTaskService.php';
 
 class ExternalVideoTaskAdmissionTest extends TestCase
@@ -123,6 +128,18 @@ class ExternalVideoTaskAdmissionTest extends TestCase
             data_get($task->payload, 'roboneo.submission.deadline_at'),
         );
         Queue::assertPushed('Botble\AiVideoGenerator\Jobs\SubmitExternalRoboNeoTask');
+    }
+
+    public function test_submit_and_poll_jobs_are_routed_to_separate_lightweight_queues(): void
+    {
+        config()->set('plugins.ai-video-generator.general.roboneo.submit_queue', 'roboneo-submit');
+        config()->set('plugins.ai-video-generator.general.roboneo.poll_queue', 'roboneo-poll');
+
+        $this->assertSame('roboneo-submit', (new SubmitExternalRoboNeoTask('external'))->queue);
+        $this->assertSame('roboneo-submit', (new RetryExternalRoboNeoSubmission('external', 1))->queue);
+        $this->assertSame('roboneo-submit', (new SubmitCustomerRoboNeoTask('customer'))->queue);
+        $this->assertSame('roboneo-poll', (new PollExternalRoboNeoTask('external'))->queue);
+        $this->assertSame('roboneo-poll', (new PollRoboNeoTask('customer'))->queue);
     }
 
     public function test_6003_keeps_the_task_processing_and_retries_with_a_fresh_context_and_token(): void

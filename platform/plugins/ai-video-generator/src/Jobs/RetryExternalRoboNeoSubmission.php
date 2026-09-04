@@ -16,7 +16,9 @@ class RetryExternalRoboNeoSubmission implements ShouldQueue
     public function __construct(
         public readonly string $taskId,
         public readonly int $expectedAttempt,
-    ) {}
+    ) {
+        $this->onQueue((string) config('plugins.ai-video-generator.general.roboneo.submit_queue', 'default'));
+    }
 
     public function handle(RoboNeoTaskPipelineService $pipeline, ExternalRoboNeoTaskSource $source): void
     {

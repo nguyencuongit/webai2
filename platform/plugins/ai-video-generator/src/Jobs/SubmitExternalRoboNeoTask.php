@@ -13,7 +13,10 @@ class SubmitExternalRoboNeoTask implements ShouldQueue
 
     public int $tries = 1;
 
-    public function __construct(public readonly string $taskId) {}
+    public function __construct(public readonly string $taskId)
+    {
+        $this->onQueue((string) config('plugins.ai-video-generator.general.roboneo.submit_queue', 'default'));
+    }
 
     public function handle(RoboNeoTaskPipelineService $pipeline, ExternalRoboNeoTaskSource $source): void
     {

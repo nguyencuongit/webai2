@@ -118,6 +118,7 @@ class RoboNeoTaskPipelineTest extends TestCase
 
         $this->assertSame('submitted', data_get($task->payload, 'roboneo.submission.state'));
         $this->assertSame(10, data_get($task->payload, 'roboneo.api_token_id'));
+        $this->assertTrue($tokenWasDeactivated);
         $this->assertSame(1, $source->pollDispatches);
 
         $source->beforeComplete = function () use (&$tokenWasDeactivated): void {
@@ -173,6 +174,40 @@ class RoboNeoTaskPipelineTest extends TestCase
         $this->assertSame(11, data_get($task->payload, 'roboneo.deactivated_api_token_id'));
     }
 
+    public function test_an_early_retry_job_is_rescheduled_after_the_precise_retry_time(): void
+    {
+        Cache::flush();
+        Carbon::setTestNow('2026-09-04 09:00:00.000000');
+
+        $retryAt = now()->addMicroseconds(838816);
+        $task = new PipelineInMemoryTask;
+        $task->forceFill([
+            'task_id' => 'early-retry-task',
+            'status' => 'PROCESSING',
+            'payload' => [
+                'roboneo' => [
+                    'submission' => [
+                        'state' => 'retry_scheduled',
+                        'attempt' => 1,
+                        'next_retry_at' => $retryAt->toISOString(),
+                        'deadline_at' => now()->addMinutes(50)->toISOString(),
+                    ],
+                ],
+            ],
+        ]);
+        $source = new PipelineInMemorySource($task);
+        $pipeline = new RoboNeoTaskPipelineService(
+            $this->createMock(RoboNeoMotionApi::class),
+            $this->createMock(AiVideoApiTokenInterface::class),
+            $this->createMock(R2VideoStorageService::class),
+        );
+
+        $pipeline->submit($source, 'early-retry-task');
+
+        $this->assertSame(1, $source->submissionDispatches);
+        $this->assertSame('2026-09-04 09:00:01.000000', $source->lastSubmissionAt?->format('Y-m-d H:i:s.u'));
+    }
+
     protected function tearDown(): void
     {
         Carbon::setTestNow();
@@ -204,6 +239,8 @@ class PipelineInMemoryTask extends Model
 class PipelineInMemorySource implements RoboNeoTaskSource
 {
     public int $submissionDispatches = 0;
+
+    public ?Carbon $lastSubmissionAt = null;
 
     public int $pollDispatches = 0;
 
@@ -240,6 +277,7 @@ class PipelineInMemorySource implements RoboNeoTaskSource
     public function dispatchSubmission(string $taskId, ?Carbon $at = null): void
     {
         $this->submissionDispatches++;
+        $this->lastSubmissionAt = $at;
     }
 
     public function dispatchPolling(string $taskId, int $delaySeconds): void
