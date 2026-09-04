@@ -4,6 +4,7 @@ namespace Botble\AiVideoGenerator\Providers;
 
 use Botble\AiVideoGenerator\Commands\CleanExpiredGeneratedMediaCommand;
 use Botble\AiVideoGenerator\Commands\CleanTemporaryMediaCommand;
+use Botble\AiVideoGenerator\Commands\ReconcileExternalRoboNeoTasksCommand;
 use Botble\AiVideoGenerator\Models\AiGenerationTask;
 use Botble\AiVideoGenerator\Models\AiVideoApiToken;
 use Botble\AiVideoGenerator\Models\AiVideoModelEndpoint;
@@ -36,6 +37,7 @@ use Botble\Base\Supports\DashboardMenuItem;
 use Botble\Base\Supports\ServiceProvider;
 use Botble\Base\Traits\LoadAndPublishDataTrait;
 use Botble\Theme\Facades\ThemeOption;
+use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Support\Facades\Route;
 
 class AiVideoGeneratorServiceProvider extends ServiceProvider
@@ -96,7 +98,15 @@ class AiVideoGeneratorServiceProvider extends ServiceProvider
         $this->commands([
             CleanTemporaryMediaCommand::class,
             CleanExpiredGeneratedMediaCommand::class,
+            ReconcileExternalRoboNeoTasksCommand::class,
         ]);
+
+        $this->app->afterResolving(Schedule::class, function (Schedule $schedule): void {
+            $schedule
+                ->command(ReconcileExternalRoboNeoTasksCommand::class)
+                ->everyMinute()
+                ->withoutOverlapping(5);
+        });
     }
 
     public function boot(): void

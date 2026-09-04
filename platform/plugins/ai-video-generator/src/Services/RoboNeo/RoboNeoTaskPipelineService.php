@@ -60,6 +60,11 @@ class RoboNeoTaskPipelineService
             $nextRetryAt = $this->carbon(data_get($submission, 'next_retry_at'));
 
             if ($nextRetryAt?->isFuture()) {
+                $source->dispatchSubmission(
+                    $taskId,
+                    $nextRetryAt->copy()->ceilSecond(),
+                );
+
                 return;
             }
 
@@ -164,7 +169,9 @@ class RoboNeoTaskPipelineService
                     $quotedTask,
                     $attemptContext,
                 );
-                $source->cleanupInputs($task->fresh() ?: $task);
+                $acceptedTask = $task->fresh() ?: $task;
+                $this->deactivateApiToken($acceptedTask);
+                $source->cleanupInputs($acceptedTask->fresh() ?: $acceptedTask);
                 $source->dispatchPolling($taskId, $this->pollInterval());
             } catch (Throwable $exception) {
                 if ($this->isBusySubmissionError($exception)) {
@@ -506,6 +513,9 @@ class RoboNeoTaskPipelineService
         $payload['roboneo']['task_id'] = $submittedTask['task_id'];
         $payload['roboneo']['session_data'] = $submittedTask['session_data'];
         $payload['roboneo']['api_token_id'] = $apiTokenId;
+        $payload['roboneo']['processing_deadline_at'] = now()
+            ->addMinutes($this->externalTaskDeadlineMinutes())
+            ->toISOString();
         $payload['roboneo']['submission'] = [
             ...($payload['roboneo']['submission'] ?? []),
             'attempt' => $attempt,
@@ -610,6 +620,14 @@ class RoboNeoTaskPipelineService
     {
         return max(1, (int) config(
             'plugins.ai-video-generator.general.roboneo.motion.admission_deadline_minutes',
+            50,
+        ));
+    }
+
+    private function externalTaskDeadlineMinutes(): int
+    {
+        return max(1, (int) config(
+            'plugins.ai-video-generator.general.roboneo.task_deadline_minutes',
             50,
         ));
     }

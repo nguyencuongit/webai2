@@ -10,6 +10,10 @@ return [
 
     'roboneo' => [
         'live_enabled' => env('ROBONEO_LIVE_ENABLED', false),
+        'submit_queue' => env('ROBONEO_SUBMIT_QUEUE', 'default'),
+        'poll_queue' => env('ROBONEO_POLL_QUEUE', 'default'),
+        'recovery_stale_seconds' => (int) env('ROBONEO_RECOVERY_STALE_SECONDS', 60),
+        'task_deadline_minutes' => (int) env('ROBONEO_TASK_DEADLINE_MINUTES', 50),
         'credentials' => [
             'app_token' => env('ROBONEO_APP_TOKEN'),
             'uid' => env('ROBONEO_UID'),
