@@ -43,6 +43,7 @@ class RoboNeoTaskPipelineTest extends TestCase
             'task_id' => 'shared-task',
             'status' => 'PROCESSING',
             'payload' => [
+                'duration' => 5,
                 'roboneo' => [
                     'submission' => [
                         'attempt' => 0,
@@ -55,16 +56,25 @@ class RoboNeoTaskPipelineTest extends TestCase
         ]);
         $source = new PipelineInMemorySource($task);
         $roboNeo = $this->createMock(RoboNeoMotionApi::class);
-        $roboNeo->method('quote')->willReturn([
-            'room_id' => 'shared-room',
-            'motion_node_id' => 'shared-node',
-            'quoted_cost' => 72,
-            'image_asset' => ['url' => 'https://assets.test/image.jpg'],
-            'video_asset' => ['url' => 'https://assets.test/video.mp4'],
-            'session_data' => ['gid' => 'shared-gid', 'uid' => 'shared-uid', 'cookies' => []],
-            'submission_trace_id' => 'shared-trace',
-            'submission_seed' => 'shared-seed',
-        ]);
+        $roboNeo->method('quote')->willReturnCallback(function (
+            string $imagePath,
+            string $videoPath,
+            string $accessToken,
+            int $duration,
+        ): array {
+            $this->assertSame(5, $duration);
+
+            return [
+                'room_id' => 'shared-room',
+                'motion_node_id' => 'shared-node',
+                'quoted_cost' => 72,
+                'image_asset' => ['url' => 'https://assets.test/image.jpg'],
+                'video_asset' => ['url' => 'https://assets.test/video.mp4'],
+                'session_data' => ['gid' => 'shared-gid', 'uid' => 'shared-uid', 'cookies' => []],
+                'submission_trace_id' => 'shared-trace',
+                'submission_seed' => 'shared-seed',
+            ];
+        });
         $roboNeo->method('submit')->willReturn([
             'task_id' => 'provider-shared-task',
             'session_data' => ['gid' => 'shared-gid', 'uid' => 'shared-uid', 'cookies' => []],

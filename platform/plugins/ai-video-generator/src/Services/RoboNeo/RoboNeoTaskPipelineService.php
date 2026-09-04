@@ -122,7 +122,7 @@ class RoboNeoTaskPipelineService
                     $localInputs['image'],
                     $localInputs['video'],
                     $tokenLease->accessToken,
-                    10,
+                    max(1, (int) ($payload['duration'] ?? 10)),
                     ['credentials' => ['gid' => $attemptGid, 'uid' => null]],
                 );
                 $quotedTask['submission_trace_id'] ??= RoboNeoIdentity::traceId();
