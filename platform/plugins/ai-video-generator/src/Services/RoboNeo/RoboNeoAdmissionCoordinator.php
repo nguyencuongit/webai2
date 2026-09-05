@@ -18,11 +18,18 @@ class RoboNeoAdmissionCoordinator
 
     private const TOKEN_LOCK = 'roboneo:admission:token:%d';
 
+    private const TOKEN_RESERVATION = 'roboneo:admission:token:%d:reservation';
+
     /**
      * @param  list<array{id: int, token_api: string}>  $tokens
      * @param  list<int>  $excludedIds
      */
-    public function leaseToken(array $tokens, array $excludedIds = []): ?RoboNeoTokenLease
+    public function leaseToken(
+        array $tokens,
+        array $excludedIds = [],
+        ?string $reservationOwner = null,
+        ?DateTimeInterface $reservationUntil = null,
+    ): ?RoboNeoTokenLease
     {
         usort($tokens, function (array $left, array $right) use ($excludedIds): int {
             $leftExcluded = in_array((int) $left['id'], $excludedIds, true);
@@ -45,6 +52,19 @@ class RoboNeoAdmissionCoordinator
             );
 
             if ($lock->get()) {
+                if ($reservationOwner !== null && $reservationUntil !== null) {
+                    $reservationKey = sprintf(self::TOKEN_RESERVATION, $tokenId);
+                    $currentOwner = Cache::get($reservationKey);
+
+                    if ($currentOwner !== null && $currentOwner !== $reservationOwner) {
+                        $lock->release();
+
+                        continue;
+                    }
+
+                    Cache::put($reservationKey, $reservationOwner, $reservationUntil);
+                }
+
                 return new RoboNeoTokenLease($token, $lock);
             }
         }
@@ -79,6 +99,25 @@ class RoboNeoAdmissionCoordinator
     public function markTokenUsed(int $tokenId, DateTimeInterface $at): void
     {
         Cache::forever(sprintf(self::TOKEN_LAST_USED, $tokenId), $at->getTimestamp());
+    }
+
+    public function releaseTokenReservation(int $tokenId, string $reservationOwner): void
+    {
+        $lock = Cache::lock(sprintf(self::TOKEN_LOCK, $tokenId), 10);
+
+        if (! $lock->get()) {
+            return;
+        }
+
+        try {
+            $reservationKey = sprintf(self::TOKEN_RESERVATION, $tokenId);
+
+            if (Cache::get($reservationKey) === $reservationOwner) {
+                Cache::forget($reservationKey);
+            }
+        } finally {
+            $lock->release();
+        }
     }
 
     public function globalCooldownUntil(): int

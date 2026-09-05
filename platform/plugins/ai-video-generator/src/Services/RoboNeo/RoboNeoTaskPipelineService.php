@@ -94,9 +94,29 @@ class RoboNeoTaskPipelineService
                 return;
             }
 
+            $reservationOwner = $this->reservationOwner($source, $taskId);
+            $quotedTask = data_get($payload, 'roboneo.admission.quoted_task');
+            $reservedTokenId = (int) data_get($payload, 'roboneo.admission.api_token_id');
             $tokens = $this->apiTokenRepository->getActiveTokens();
+
+            if (is_array($quotedTask) && $reservedTokenId > 0) {
+                // A room was already created for this task. It must be submitted with
+                // the same account instead of creating another room on a retry.
+                $tokens = array_values(array_filter(
+                    $tokens,
+                    static fn (array $token): bool => (int) $token['id'] === $reservedTokenId,
+                ));
+            } else {
+                $quotedTask = null;
+            }
+
             $lastBusyTokenId = (int) data_get($submission, 'last_busy_token_id', 0);
-            $tokenLease = $coordinator->leaseToken($tokens, $lastBusyTokenId > 0 ? [$lastBusyTokenId] : []);
+            $tokenLease = $coordinator->leaseToken(
+                $tokens,
+                $quotedTask === null && $lastBusyTokenId > 0 ? [$lastBusyTokenId] : [],
+                $reservationOwner,
+                $deadline,
+            );
 
             if (! $tokenLease) {
                 $this->scheduleAdmission(
@@ -123,15 +143,18 @@ class RoboNeoTaskPipelineService
             ];
 
             try {
-                $quotedTask = $this->roboNeo->quote(
-                    $localInputs['image'],
-                    $localInputs['video'],
-                    $tokenLease->accessToken,
-                    max(1, (int) ($payload['duration'] ?? 10)),
-                    ['credentials' => ['gid' => $attemptGid, 'uid' => null]],
-                );
-                $quotedTask['submission_trace_id'] ??= RoboNeoIdentity::traceId();
-                $quotedTask['submission_seed'] ??= RoboNeoIdentity::seed();
+                if ($quotedTask === null) {
+                    $quotedTask = $this->roboNeo->quote(
+                        $localInputs['image'],
+                        $localInputs['video'],
+                        $tokenLease->accessToken,
+                        max(1, (int) ($payload['duration'] ?? 10)),
+                        ['credentials' => ['gid' => $attemptGid, 'uid' => null]],
+                    );
+                    $quotedTask['submission_trace_id'] ??= RoboNeoIdentity::traceId();
+                    $quotedTask['submission_seed'] ??= RoboNeoIdentity::seed();
+                    $this->storeAdmissionQuote($task, $tokenLease->tokenId, $quotedTask);
+                }
                 $attemptContext = [
                     ...$attemptContext,
                     'uid_hash' => $this->fingerprint((string) data_get($quotedTask, 'session_data.uid')),
@@ -169,6 +192,7 @@ class RoboNeoTaskPipelineService
                     $quotedTask,
                     $attemptContext,
                 );
+                $coordinator->releaseTokenReservation($tokenLease->tokenId, $reservationOwner);
                 $acceptedTask = $task->fresh() ?: $task;
                 $this->deactivateApiToken($acceptedTask);
                 $source->cleanupInputs($acceptedTask->fresh() ?: $acceptedTask);
@@ -188,6 +212,7 @@ class RoboNeoTaskPipelineService
 
                 if ($this->isCredentialError($exception)) {
                     $this->apiTokenRepository->deactivate($tokenLease->tokenId);
+                    $coordinator->releaseTokenReservation($tokenLease->tokenId, $reservationOwner);
                     $this->appendSubmissionHistory($task, [
                         ...$attemptContext,
                         'status' => 'credential_invalid',
@@ -199,6 +224,9 @@ class RoboNeoTaskPipelineService
                     return;
                 }
 
+                // quote() can fail before its room is persisted on the task, so
+                // release the cache reservation directly as well.
+                $coordinator->releaseTokenReservation($tokenLease->tokenId, $reservationOwner);
                 $this->failAdmissionException($source, $task, $exception, $attemptContext);
             } finally {
                 $tokenLease->release();
@@ -437,6 +465,8 @@ class RoboNeoTaskPipelineService
 
     private function failProviderAdmission(RoboNeoTaskSource $source, Model $task): void
     {
+        $this->releaseAdmissionReservation($source, $task);
+
         $this->failAdmissionTask(
             $source,
             $task,
@@ -478,6 +508,7 @@ class RoboNeoTaskPipelineService
             'failed_at' => now()->toISOString(),
         ];
         $task->update(['payload' => $payload]);
+        $this->releaseAdmissionReservation($source, $task);
         $source->cleanupInputs($task->fresh() ?: $task);
         $source->fail($task->fresh() ?: $task, $code, $message);
     }
@@ -523,6 +554,7 @@ class RoboNeoTaskPipelineService
             'submitted_at' => now()->toISOString(),
             'history' => $history,
         ];
+        unset($payload['roboneo']['admission']);
         unset($payload['roboneo']['submission']['next_retry_at']);
         $task->update(['payload' => $payload]);
     }
@@ -666,6 +698,35 @@ class RoboNeoTaskPipelineService
     private function fingerprint(string $value): ?string
     {
         return $value === '' ? null : substr(hash('sha256', $value), 0, 12);
+    }
+
+    private function storeAdmissionQuote(Model $task, int $apiTokenId, array $quotedTask): void
+    {
+        $payload = is_array($task->payload ?? null) ? $task->payload : [];
+        $payload['roboneo']['admission'] = [
+            'api_token_id' => $apiTokenId,
+            'quoted_task' => $quotedTask,
+            'reserved_at' => now()->toISOString(),
+        ];
+        $task->update(['payload' => $payload]);
+    }
+
+    private function releaseAdmissionReservation(RoboNeoTaskSource $source, Model $task): void
+    {
+        $payload = is_array($task->payload ?? null) ? $task->payload : [];
+        $tokenId = (int) data_get($payload, 'roboneo.admission.api_token_id');
+
+        if ($tokenId > 0) {
+            $this->coordinator()->releaseTokenReservation(
+                $tokenId,
+                $this->reservationOwner($source, (string) $task->task_id),
+            );
+        }
+    }
+
+    private function reservationOwner(RoboNeoTaskSource $source, string $taskId): string
+    {
+        return $source->key().':'.$taskId;
     }
 
     public function pollInterval(): int
