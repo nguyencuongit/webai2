@@ -10,6 +10,7 @@ use Botble\Table\Actions\EditAction;
 use Botble\Table\Columns\Column;
 use Botble\Table\Columns\CreatedAtColumn;
 use Botble\Table\Columns\IdColumn;
+use Botble\Table\HeaderActions\HeaderAction;
 use Illuminate\Database\Eloquent\Builder;
 
 class AiVideoApiTokenTable extends TableAbstract
@@ -19,6 +20,14 @@ class AiVideoApiTokenTable extends TableAbstract
         $this
             ->model(AiVideoApiToken::class)
             ->setAjaxUrl(route('ai-video-generator.api-tokens.table'))
+            ->addHeaderAction(
+                HeaderAction::make('import-api-tokens')
+                    ->label('Nhập Excel')
+                    ->icon('ti ti-file-spreadsheet')
+                    ->color('success')
+                    ->url(route('ai-video-generator.api-tokens.import.form'))
+                    ->permission('ai-video-generator.api-tokens.index')
+            )
             ->addActions([
                 EditAction::make()
                     ->route('ai-video-generator.api-tokens.edit')
