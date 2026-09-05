@@ -121,6 +121,9 @@ Route::group(['namespace' => 'Botble\AiVideoGenerator\Http\Controllers'], functi
 
             Route::get('api-tokens', ['as' => 'api-tokens.index', 'uses' => 'Admin\AiVideoApiTokenController@index', 'permission' => 'ai-video-generator.api-tokens.index']);
             Route::post('api-tokens/table', ['as' => 'api-tokens.table', 'uses' => 'Admin\AiVideoApiTokenController@index', 'permission' => 'ai-video-generator.api-tokens.index']);
+            Route::get('api-tokens/import', ['as' => 'api-tokens.import.form', 'uses' => 'Admin\AiVideoApiTokenController@importForm', 'permission' => 'ai-video-generator.api-tokens.index']);
+            Route::post('api-tokens/import', ['as' => 'api-tokens.import', 'uses' => 'Admin\AiVideoApiTokenController@import', 'permission' => 'ai-video-generator.api-tokens.create']);
+            Route::get('api-tokens/import/template', ['as' => 'api-tokens.import.template', 'uses' => 'Admin\AiVideoApiTokenController@downloadTemplate', 'permission' => 'ai-video-generator.api-tokens.index']);
             Route::get('api-tokens/create', ['as' => 'api-tokens.create', 'uses' => 'Admin\AiVideoApiTokenController@create', 'permission' => 'ai-video-generator.api-tokens.create']);
             Route::post('api-tokens', ['as' => 'api-tokens.store', 'uses' => 'Admin\AiVideoApiTokenController@store', 'permission' => 'ai-video-generator.api-tokens.create']);
             Route::get('api-tokens/{apiToken}/edit', ['as' => 'api-tokens.edit', 'uses' => 'Admin\AiVideoApiTokenController@edit', 'permission' => 'ai-video-generator.api-tokens.edit']);
