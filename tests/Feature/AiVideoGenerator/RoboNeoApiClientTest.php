@@ -5,6 +5,7 @@ namespace Tests\Feature\AiVideoGenerator;
 use Botble\AiVideoGenerator\Api\RoboNeo\RoboNeoApiClient;
 use Botble\AiVideoGenerator\Api\RoboNeo\RoboNeoContext;
 use Botble\AiVideoGenerator\Api\RoboNeo\RoboNeoProtocolException;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -96,15 +97,60 @@ class RoboNeoApiClientTest extends TestCase
         $this->assertSame('1788420000000-24681357', $parameter['node_list_array'][0][0]['parameters']['random']);
     }
 
-    private function client(): RoboNeoApiClient
+    public function test_it_routes_requests_through_an_authenticated_proxy_without_credentials_in_the_proxy_address(): void
+    {
+        $client = $this->client([
+            'http' => [
+                'proxy_url' => 'http://proxy-user:proxy-pass@103.82.25.188:30664',
+            ],
+        ]);
+        $method = new \ReflectionMethod($client, 'request');
+        $request = $method->invoke($client);
+        $curl = $request->getOptions()['curl'];
+
+        $this->assertSame('http://103.82.25.188:30664', $curl[CURLOPT_PROXY]);
+        $this->assertSame('proxy-user:proxy-pass', $curl[CURLOPT_PROXYUSERPWD]);
+        $this->assertStringNotContainsString('proxy-pass', $curl[CURLOPT_PROXY]);
+    }
+
+    public function test_proxy_connection_failures_are_retried_and_redacted(): void
+    {
+        $attempts = 0;
+        Http::preventStrayRequests();
+        Http::fake(function () use (&$attempts): never {
+            $attempts++;
+
+            throw new ConnectionException(
+                'cURL error 28: Proxy CONNECT timeout for https://api.account.test/users?access_token=secret-token',
+            );
+        });
+
+        try {
+            $this->client([
+                'http' => ['proxy_url' => 'http://proxy-user:proxy-pass@127.0.0.1:3128'],
+            ])->initialize();
+            $this->fail('Expected the exhausted proxy connection to fail.');
+        } catch (RoboNeoProtocolException $exception) {
+            $this->assertSame('proxy_connection_failed', $exception->protocolCode);
+            $this->assertSame('initconfig', $exception->responseData['stage']);
+            $this->assertSame(3, $exception->responseData['attempts']);
+            $this->assertTrue($exception->responseData['via_proxy']);
+            $this->assertStringNotContainsString('secret-token', $exception->getMessage());
+            $this->assertStringNotContainsString('proxy-pass', $exception->getMessage());
+        }
+
+        $this->assertSame(3, $attempts);
+    }
+
+    private function client(array $settings = []): RoboNeoApiClient
     {
         return new RoboNeoApiClient(
             new RoboNeoContext('gid-1', 'mt-g-1', 'sid-1', 'uid-1'),
             'access-token-1',
-            [
+            array_replace_recursive([
                 'credentials' => ['app_token' => 'app-token-1'],
                 'http' => ['retry_delays_ms' => [0, 0]],
-            ],
+            ], $settings),
         );
     }
 }

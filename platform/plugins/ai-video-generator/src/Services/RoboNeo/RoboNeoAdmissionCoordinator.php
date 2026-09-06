@@ -16,6 +16,8 @@ class RoboNeoAdmissionCoordinator
 
     private const TOKEN_LAST_USED = 'roboneo:admission:token:%d:last-used';
 
+    private const TOKEN_BUSY_STRIKES = 'roboneo:admission:token:%d:busy-strikes';
+
     private const TOKEN_LOCK = 'roboneo:admission:token:%d';
 
     private const TOKEN_RESERVATION = 'roboneo:admission:token:%d:reservation';
@@ -29,8 +31,7 @@ class RoboNeoAdmissionCoordinator
         array $excludedIds = [],
         ?string $reservationOwner = null,
         ?DateTimeInterface $reservationUntil = null,
-    ): ?RoboNeoTokenLease
-    {
+    ): ?RoboNeoTokenLease {
         usort($tokens, function (array $left, array $right) use ($excludedIds): int {
             $leftExcluded = in_array((int) $left['id'], $excludedIds, true);
             $rightExcluded = in_array((int) $right['id'], $excludedIds, true);
@@ -99,6 +100,26 @@ class RoboNeoAdmissionCoordinator
     public function markTokenUsed(int $tokenId, DateTimeInterface $at): void
     {
         Cache::forever(sprintf(self::TOKEN_LAST_USED, $tokenId), $at->getTimestamp());
+        Cache::forget(sprintf(self::TOKEN_BUSY_STRIKES, $tokenId));
+    }
+
+    public function recordTokenBusy(int $tokenId, DateTimeInterface $until): int
+    {
+        $key = sprintf(self::TOKEN_BUSY_STRIKES, $tokenId);
+        $lock = Cache::lock($key.':lock', 5);
+
+        if (! $lock->get()) {
+            return max(1, (int) Cache::get($key, 0));
+        }
+
+        try {
+            $strikes = (int) Cache::get($key, 0) + 1;
+            Cache::put($key, $strikes, $until);
+
+            return $strikes;
+        } finally {
+            $lock->release();
+        }
     }
 
     public function releaseTokenReservation(int $tokenId, string $reservationOwner): void

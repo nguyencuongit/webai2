@@ -80,6 +80,19 @@ class RoboNeoAdmissionCoordinatorTest extends TestCase
         $gate?->release();
     }
 
+    public function test_busy_strikes_persist_across_retries_and_reset_after_a_successful_submit(): void
+    {
+        $coordinator = new RoboNeoAdmissionCoordinator;
+        $expiresAt = now()->addHour();
+
+        $this->assertSame(1, $coordinator->recordTokenBusy(9, $expiresAt));
+        $this->assertSame(2, $coordinator->recordTokenBusy(9, $expiresAt));
+
+        $coordinator->markTokenUsed(9, now());
+
+        $this->assertSame(1, $coordinator->recordTokenBusy(9, $expiresAt));
+    }
+
     /** @return list<array{id: int, token_api: string}> */
     private function tokens(): array
     {

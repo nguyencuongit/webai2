@@ -14,6 +14,8 @@ use Botble\AiVideoGenerator\Repositories\Interfaces\ExternalVideoTaskInterface;
 use Botble\AiVideoGenerator\Services\Api\ExternalVideoTaskService;
 use Botble\AiVideoGenerator\Services\R2\R2VideoStorageService;
 use Botble\AiVideoGenerator\Services\RoboNeo\MotionVideoTrimmer;
+use Botble\AiVideoGenerator\Services\RoboNeo\RoboNeoAdmissionCoordinator;
+use Botble\AiVideoGenerator\Services\RoboNeo\RoboNeoProxyPool;
 use Botble\AiVideoGenerator\Services\RoboNeo\RoboNeoTaskPipelineService;
 use Botble\AiVideoGenerator\Services\RoboNeo\Sources\ExternalRoboNeoTaskSource;
 use Illuminate\Database\Eloquent\Model;
@@ -32,6 +34,8 @@ require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Repos
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/MotionVideoTrimmer.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/RoboNeoTokenLease.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/RoboNeoAdmissionCoordinator.php';
+require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/RoboNeoProxyPoolSettings.php';
+require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/RoboNeoProxyPool.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/Contracts/RoboNeoTaskSource.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/RoboNeoTaskPipelineService.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/Sources/ExternalRoboNeoTaskSource.php';
@@ -45,6 +49,11 @@ require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Servi
 
 class ExternalVideoTaskAdmissionTest extends TestCase
 {
+    private const PROXY_URLS = [
+        'http://proxy-a-user:proxy-a-pass@103.82.25.188:30664',
+        'http://proxy-b-user:proxy-b-pass@103.14.225.181:50563',
+    ];
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -151,6 +160,10 @@ class ExternalVideoTaskAdmissionTest extends TestCase
 
         $task = $this->queuedTask('admission-test');
         $quoteCall = 0;
+        $quoteProxies = [];
+        $quoteIpFamilies = [];
+        $submitProxies = [];
+        $submitIpFamilies = [];
         $roboNeo = $this->createMock(RoboNeoMotionApi::class);
         $roboNeo->method('quote')->willReturnCallback(function (
             string $imagePath,
@@ -158,8 +171,10 @@ class ExternalVideoTaskAdmissionTest extends TestCase
             string $accessToken,
             int $duration,
             array $settings,
-        ) use (&$quoteCall): array {
+        ) use (&$quoteCall, &$quoteProxies, &$quoteIpFamilies): array {
             $quoteCall++;
+            $quoteProxies[] = data_get($settings, 'http.proxy_url');
+            $quoteIpFamilies[] = data_get($settings, 'http.ip_family');
 
             return [
                 'room_id' => 'room-'.$quoteCall,
@@ -176,11 +191,18 @@ class ExternalVideoTaskAdmissionTest extends TestCase
                 'submission_seed' => 'seed-'.$quoteCall,
             ];
         });
-        $roboNeo->method('submit')->willThrowException(
-            new RoboNeoProtocolException('The system is busy. Please try again later.', '6003'),
-        );
+        $roboNeo->method('submit')->willReturnCallback(function (
+            array $quotedTask,
+            string $accessToken,
+            array $settings,
+        ) use (&$submitProxies, &$submitIpFamilies): never {
+            $submitProxies[] = data_get($settings, 'http.proxy_url');
+            $submitIpFamilies[] = data_get($settings, 'http.ip_family');
 
-        $service = $this->admissionService($task, $roboNeo);
+            throw new RoboNeoProtocolException('The system is busy. Please try again later.', '6003');
+        });
+
+        $service = $this->admissionService($task, $roboNeo, proxyUrls: self::PROXY_URLS);
 
         $service->submitPendingRoboNeoTask($task);
         $firstNextRetry = Carbon::parse((string) data_get($task->payload, 'roboneo.submission.next_retry_at'));
@@ -192,6 +214,17 @@ class ExternalVideoTaskAdmissionTest extends TestCase
         $this->assertSame('retry_scheduled', data_get($task->payload, 'roboneo.submission.state'));
         $this->assertSame([9, 10], array_column($history, 'api_token_id'));
         $this->assertSame(['6003', '6003'], array_column($history, 'provider_code'));
+        $this->assertSame([1, 1], array_column($history, 'token_busy_strikes'));
+        $this->assertSame([
+            'http://proxy-a-user:proxy-a-pass@103.82.25.188:30664',
+            'http://proxy-b-user:proxy-b-pass@103.14.225.181:50563',
+        ], $quoteProxies);
+        $this->assertSame($quoteProxies, $submitProxies);
+        $this->assertSame([null, null], $quoteIpFamilies);
+        $this->assertSame($quoteIpFamilies, $submitIpFamilies);
+        $this->assertNotSame($history[0]['proxy_id'], $history[1]['proxy_id']);
+        $this->assertStringNotContainsString('proxy-a-pass', json_encode($history, JSON_THROW_ON_ERROR));
+        $this->assertStringNotContainsString('proxy-b-pass', json_encode($history, JSON_THROW_ON_ERROR));
         $this->assertNotSame($history[0]['gid_hash'], $history[1]['gid_hash']);
         $this->assertNotSame($history[0]['room_hash'], $history[1]['room_hash']);
         $this->assertNotSame($history[0]['trace_hash'], $history[1]['trace_hash']);
@@ -200,6 +233,66 @@ class ExternalVideoTaskAdmissionTest extends TestCase
         $this->assertFileExists((string) data_get($task->payload, 'roboneo.local_inputs.video'));
         Http::assertSentCount(2);
         Queue::assertPushed('Botble\AiVideoGenerator\Jobs\SubmitExternalRoboNeoTask', 2);
+    }
+
+    public function test_repeated_6003_quarantines_the_same_token_for_longer(): void
+    {
+        Queue::fake();
+        Http::preventStrayRequests();
+        Http::fake(fn () => Http::response('media-bytes'));
+        Carbon::setTestNow('2026-09-03 12:00:00');
+        config()->set('plugins.ai-video-generator.general.roboneo.motion.repeated_busy_token_cooldown_seconds', 1800);
+
+        $task = $this->queuedTask('admission-test');
+        $quoteCall = 0;
+        $roboNeo = $this->createMock(RoboNeoMotionApi::class);
+        $roboNeo->method('quote')->willReturnCallback(function (
+            string $imagePath,
+            string $videoPath,
+            string $accessToken,
+            int $duration,
+            array $settings,
+        ) use (&$quoteCall): array {
+            $quoteCall++;
+
+            return [
+                'room_id' => 'repeat-room-'.$quoteCall,
+                'motion_node_id' => 'repeat-node-'.$quoteCall,
+                'quoted_cost' => 72,
+                'image_asset' => ['url' => 'https://assets.example.com/repeat-image.jpg'],
+                'video_asset' => ['url' => 'https://assets.example.com/repeat-video.mp4'],
+                'session_data' => [
+                    'gid' => data_get($settings, 'credentials.gid'),
+                    'uid' => 'repeat-uid',
+                    'cookies' => [],
+                ],
+                'submission_trace_id' => 'repeat-trace-'.$quoteCall,
+                'submission_seed' => 'repeat-seed-'.$quoteCall,
+            ];
+        });
+        $roboNeo->method('submit')->willThrowException(
+            new RoboNeoProtocolException('The system is busy.', '6003'),
+        );
+        $service = $this->admissionService(
+            $task,
+            $roboNeo,
+            [['id' => 9, 'token_api' => 'token-nine']],
+            self::PROXY_URLS,
+        );
+
+        $service->submitPendingRoboNeoTask($task);
+        Carbon::setTestNow(Carbon::parse(
+            (string) data_get($task->payload, 'roboneo.submission.next_retry_at'),
+        )->addSecond());
+        $service->submitPendingRoboNeoTask($task);
+
+        $history = data_get($task->payload, 'roboneo.submission.history', []);
+        $nextRetryAt = Carbon::parse((string) data_get($task->payload, 'roboneo.submission.next_retry_at'));
+        $this->assertSame([9, 9], array_column($history, 'api_token_id'));
+        $this->assertSame([1, 2], array_column($history, 'token_busy_strikes'));
+        $this->assertNotSame($history[0]['proxy_id'], $history[1]['proxy_id']);
+        $this->assertGreaterThanOrEqual(1800, now()->diffInSeconds($nextRetryAt));
+        $this->assertSame('PROCESSING', $task->status);
     }
 
     public function test_transient_provider_gateway_failure_keeps_the_task_processing_until_admission_deadline(): void
@@ -236,6 +329,51 @@ class ExternalVideoTaskAdmissionTest extends TestCase
         Queue::assertPushed('Botble\AiVideoGenerator\Jobs\SubmitExternalRoboNeoTask');
     }
 
+    public function test_proxy_connection_failure_cools_down_the_proxy_and_retries_on_another_route(): void
+    {
+        Queue::fake();
+        Http::preventStrayRequests();
+        Http::fake(fn () => Http::response('media-bytes'));
+        Carbon::setTestNow('2026-09-03 12:00:00');
+        config()->set('plugins.ai-video-generator.general.roboneo.motion.proxy_cooldown_seconds', 120);
+
+        $task = $this->queuedTask('admission-test');
+        $attemptedProxy = null;
+        $roboNeo = $this->createMock(RoboNeoMotionApi::class);
+        $roboNeo->method('quote')->willReturnCallback(function (
+            string $imagePath,
+            string $videoPath,
+            string $accessToken,
+            int $duration,
+            array $settings,
+        ) use (&$attemptedProxy): never {
+            $attemptedProxy = data_get($settings, 'http.proxy_url');
+
+            throw new RoboNeoProtocolException(
+                'RoboNeo request could not connect through the assigned proxy.',
+                'proxy_connection_failed',
+                ['stage' => 'resolve_uid', 'attempts' => 3, 'via_proxy' => true],
+            );
+        });
+
+        $this->admissionService($task, $roboNeo, proxyUrls: self::PROXY_URLS)->submitPendingRoboNeoTask($task);
+
+        $history = data_get($task->payload, 'roboneo.submission.history.0', []);
+        $this->assertSame('PROCESSING', $task->status);
+        $this->assertSame('retry_scheduled', data_get($task->payload, 'roboneo.submission.state'));
+        $this->assertSame('transient_provider_failure', $history['status']);
+        $this->assertSame('proxy_connection_failed', $history['provider_code']);
+        $this->assertSame('2026-09-03T12:02:00.000000Z', $history['proxy_cooldown_until']);
+        $this->assertNotSame($history['proxy_id'], data_get($task->payload, 'roboneo.submission.next_proxy_id'));
+        $this->assertStringNotContainsString('proxy-a-pass', json_encode($task->payload, JSON_THROW_ON_ERROR));
+        $this->assertStringNotContainsString('proxy-b-pass', json_encode($task->payload, JSON_THROW_ON_ERROR));
+        $this->assertNotNull($attemptedProxy);
+        $this->assertArrayNotHasKey('result', $task->payload);
+        $this->assertFileExists((string) data_get($task->payload, 'roboneo.local_inputs.image'));
+        $this->assertFileExists((string) data_get($task->payload, 'roboneo.local_inputs.video'));
+        Queue::assertPushed('Botble\AiVideoGenerator\Jobs\SubmitExternalRoboNeoTask');
+    }
+
     public function test_deadline_emits_one_normalized_failure_without_exposing_6003(): void
     {
         Queue::fake();
@@ -254,6 +392,30 @@ class ExternalVideoTaskAdmissionTest extends TestCase
         $this->assertSame('ROBONEO_PROVIDER_UNAVAILABLE', data_get($task->payload, 'result.error.code'));
         $this->assertStringNotContainsString('6003', (string) data_get($task->payload, 'result.error.message'));
         Http::assertSentCount(1);
+    }
+
+    public function test_unexpected_admission_failures_never_persist_credentials_or_raw_urls(): void
+    {
+        Queue::fake();
+        Http::preventStrayRequests();
+        Http::fake(fn () => Http::response('media-bytes'));
+        Carbon::setTestNow('2026-09-03 12:00:00');
+
+        $task = $this->queuedTask('admission-test');
+        $roboNeo = $this->createMock(RoboNeoMotionApi::class);
+        $roboNeo->method('quote')->willThrowException(new \RuntimeException(
+            'Proxy failed for http://user:password@127.0.0.1:3128/account?access_token=secret-token',
+        ));
+
+        $this->admissionService($task, $roboNeo)->submitPendingRoboNeoTask($task);
+
+        $message = (string) data_get($task->payload, 'result.error.message');
+        $this->assertSame('FAILED', $task->status);
+        $this->assertSame('ROBONEO_PIPELINE_FAILED', data_get($task->payload, 'result.error.code'));
+        $this->assertSame('RoboNeo failed before provider admission.', $message);
+        $this->assertStringNotContainsString('secret-token', json_encode($task->payload, JSON_THROW_ON_ERROR));
+        $this->assertStringNotContainsString('password', json_encode($task->payload, JSON_THROW_ON_ERROR));
+        $this->assertStringNotContainsString('access_token=', json_encode($task->payload, JSON_THROW_ON_ERROR));
     }
 
     public function test_an_accepted_task_keeps_its_token_and_duplicate_jobs_never_resubmit_it(): void
@@ -450,9 +612,11 @@ class ExternalVideoTaskAdmissionTest extends TestCase
     private function admissionService(
         AdmissionInMemoryExternalVideoTask $task,
         RoboNeoMotionApi $roboNeo,
+        ?array $activeTokens = null,
+        ?array $proxyUrls = null,
     ): ExternalVideoTaskService {
         $tokens = $this->createMock(AiVideoApiTokenInterface::class);
-        $tokens->method('getActiveTokens')->willReturn([
+        $tokens->method('getActiveTokens')->willReturn($activeTokens ?? [
             ['id' => 9, 'token_api' => 'token-nine'],
             ['id' => 10, 'token_api' => 'token-ten'],
         ]);
@@ -463,12 +627,24 @@ class ExternalVideoTaskAdmissionTest extends TestCase
         $trimmer = $this->createMock(MotionVideoTrimmer::class);
         $trimmer->method('trim')->willReturnCallback(static fn (string $path): string => $path);
 
+        $storage = $this->createMock(R2VideoStorageService::class);
+        $coordinator = new RoboNeoAdmissionCoordinator;
+        $pipeline = new RoboNeoTaskPipelineService(
+            $roboNeo,
+            $tokens,
+            $storage,
+            $coordinator,
+            $proxyUrls === null ? null : new RoboNeoProxyPool($proxyUrls),
+        );
+
         return new ExternalVideoTaskService(
             $roboNeo,
             $tokens,
             $tasks,
             $trimmer,
-            $this->createMock(R2VideoStorageService::class),
+            $storage,
+            $coordinator,
+            $pipeline,
         );
     }
 }

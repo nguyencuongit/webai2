@@ -2,11 +2,13 @@
 
 namespace Botble\AiVideoGenerator\Http\Controllers\Admin;
 
-use Botble\AiVideoGenerator\Forms\AiVideoApiTokenForm;
 use Botble\AiVideoGenerator\Exports\AiVideoApiTokenTemplateExport;
+use Botble\AiVideoGenerator\Forms\AiVideoApiTokenForm;
 use Botble\AiVideoGenerator\Http\Requests\CreateAiVideoApiTokenRequest;
 use Botble\AiVideoGenerator\Http\Requests\UpdateAiVideoApiTokenRequest;
+use Botble\AiVideoGenerator\Http\Requests\UpdateRoboNeoProxyPoolRequest;
 use Botble\AiVideoGenerator\Models\AiVideoApiToken;
+use Botble\AiVideoGenerator\Services\RoboNeo\RoboNeoProxyPoolSettings;
 use Botble\AiVideoGenerator\Tables\AiVideoApiTokenTable;
 use Botble\Base\Http\Actions\DeleteResourceAction;
 use Botble\Base\Http\Controllers\BaseController;
@@ -24,11 +26,32 @@ class AiVideoApiTokenController extends BaseController
         return parent::breadcrumb()->add('API token', route('ai-video-generator.api-tokens.index'));
     }
 
-    public function index(AiVideoApiTokenTable $table)
+    public function index(AiVideoApiTokenTable $table, RoboNeoProxyPoolSettings $proxyPoolSettings)
     {
         $this->pageTitle('API token');
 
-        return $table->renderTable();
+        if ($table->request()->ajax() && $table->request()->wantsJson()) {
+            return $table->renderTable();
+        }
+
+        $proxyPool = $proxyPoolSettings->asText();
+
+        return view('plugins/ai-video-generator::api-tokens.index', [
+            'table' => $table,
+            'proxyPool' => $proxyPool,
+            'proxyCount' => count($proxyPoolSettings->all()),
+        ]);
+    }
+
+    public function updateProxyPool(
+        UpdateRoboNeoProxyPoolRequest $request,
+        RoboNeoProxyPoolSettings $proxyPoolSettings,
+    ): RedirectResponse {
+        $proxyPoolSettings->replace($request->proxyUrls());
+
+        return redirect()
+            ->route('ai-video-generator.api-tokens.index')
+            ->with('success_msg', 'Đã cập nhật proxy pool RoboNeo. Cấu hình mới có hiệu lực ngay.');
     }
 
     public function create()
@@ -126,17 +149,20 @@ class AiVideoApiTokenController extends BaseController
 
             if ($name === '' || $token === '') {
                 $errors[] = "Dòng {$rowNumber}: name và token_api là bắt buộc.";
+
                 continue;
             }
 
             if (mb_strlen($name) > 255 || mb_strlen($token) > 255) {
                 $errors[] = "Dòng {$rowNumber}: name hoặc token_api dài quá 255 ký tự.";
+
                 continue;
             }
 
             if (isset($seenTokens[$token]) || AiVideoApiToken::query()->where('token_api', $token)->exists()) {
                 $skipped++;
                 $seenTokens[$token] = true;
+
                 continue;
             }
 
