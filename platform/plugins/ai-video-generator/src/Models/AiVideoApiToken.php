@@ -13,9 +13,16 @@ class AiVideoApiToken extends BaseModel
         'token_api',
         'webhook_secret',
         'status',
+        'health_status',
+        'blocked_until',
+        'busy_strikes',
+        'last_failure_code',
+        'last_failed_at',
     ];
 
     protected $casts = [
         'status' => 'boolean',
+        'blocked_until' => 'datetime',
+        'last_failed_at' => 'datetime',
     ];
 }

@@ -5,13 +5,21 @@ namespace Botble\AiVideoGenerator\Repositories\Eloquent;
 use Botble\AiVideoGenerator\Models\AiVideoApiToken;
 use Botble\AiVideoGenerator\Repositories\Interfaces\AiVideoApiTokenInterface;
 use Botble\Support\Repositories\Eloquent\RepositoriesAbstract;
+use Illuminate\Support\Facades\Schema;
 
 class AiVideoApiTokenRepository extends RepositoriesAbstract implements AiVideoApiTokenInterface
 {
     public function getActiveTokens(): array
     {
-        return AiVideoApiToken::query()
-            ->where('status', true)
+        $query = AiVideoApiToken::query()->where('status', true);
+
+        if (Schema::hasColumn('ai_video_api_tokens', 'blocked_until')) {
+            $query->where(static function ($query): void {
+                $query->whereNull('blocked_until')->orWhere('blocked_until', '<=', now());
+            });
+        }
+
+        return $query
             ->oldest('id')
             ->get(['id', 'token_api'])
             ->map(static fn (AiVideoApiToken $token): array => [
@@ -23,8 +31,15 @@ class AiVideoApiTokenRepository extends RepositoriesAbstract implements AiVideoA
 
     public function getLatestActiveToken(): ?array
     {
-        $token = AiVideoApiToken::query()
-            ->where('status', true)
+        $query = AiVideoApiToken::query()->where('status', true);
+
+        if (Schema::hasColumn('ai_video_api_tokens', 'blocked_until')) {
+            $query->where(static function ($query): void {
+                $query->whereNull('blocked_until')->orWhere('blocked_until', '<=', now());
+            });
+        }
+
+        $token = $query
             ->latest('id')
             ->first(['id', 'token_api']);
 

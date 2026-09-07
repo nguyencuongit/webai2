@@ -8,12 +8,15 @@ use Botble\AiVideoGenerator\Api\RoboNeo\RoboNeoProtocolException;
 use Botble\AiVideoGenerator\Repositories\Interfaces\AiVideoApiTokenInterface;
 use Botble\AiVideoGenerator\Services\R2\R2VideoStorageService;
 use Botble\AiVideoGenerator\Services\RoboNeo\Contracts\RoboNeoTaskSource;
+use Botble\AiVideoGenerator\Services\RoboNeo\KiotProxy\KiotProxyLease;
+use Botble\AiVideoGenerator\Services\RoboNeo\KiotProxy\KiotProxyManager;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Throwable;
 
 class RoboNeoTaskPipelineService
@@ -24,6 +27,7 @@ class RoboNeoTaskPipelineService
         protected R2VideoStorageService $r2VideoStorage,
         protected ?RoboNeoAdmissionCoordinator $admissionCoordinator = null,
         protected ?RoboNeoProxyPool $proxyPool = null,
+        protected ?KiotProxyManager $kiotProxyManager = null,
     ) {}
 
     public function submit(RoboNeoTaskSource $source, string $taskId): void
@@ -134,30 +138,57 @@ class RoboNeoTaskPipelineService
 
             $attempt = (int) data_get($submission, 'attempt', 0) + 1;
             $ipFamily = $attempt % 2 === 0 ? 'ipv6' : 'ipv4';
-            $proxyPool = $this->proxyPool();
-            $proxyId = (string) (is_array($quotedTask)
-                ? data_get($payload, 'roboneo.admission.proxy_id')
-                : data_get($submission, 'next_proxy_id'));
+            $kiotProxyLease = null;
+            $usesKiotProxy = Schema::hasTable('ai_video_kiot_proxy_keys');
+            $kiotManager = $usesKiotProxy ? $this->kiotProxyManager() : null;
+            $usesKiotProxy = $kiotManager?->hasConfiguredKeys() === true;
 
-            if ($quotedTask === null && ! $proxyPool->isAvailable($proxyId)) {
-                $proxyId = (string) ($proxyPool->initialId($tokenLease->tokenId) ?? '');
-            }
+            if ($usesKiotProxy) {
+                $preferredKeyId = is_array($quotedTask)
+                    ? (int) data_get($payload, 'roboneo.admission.kiot_proxy_key_id')
+                    : null;
+                $kiotProxyLease = $kiotManager->acquire(
+                    $reservationOwner,
+                    $deadline,
+                    $preferredKeyId ?: null,
+                );
 
-            $proxyUrl = $proxyPool->url($proxyId);
+                if (! $kiotProxyLease) {
+                    $tokenLease->release();
+                    $coordinator->releaseTokenReservation($tokenLease->tokenId, $reservationOwner);
+                    $this->scheduleAdmission($source, $task, $kiotManager->earliestAvailableAt());
 
-            if ($proxyPool->hasConfiguredProxies() && $proxyUrl === null) {
-                $tokenLease->release();
-                $coordinator->releaseTokenReservation($tokenLease->tokenId, $reservationOwner);
-                $availableAt = $proxyPool->earliestAvailableAt();
-                $retryAt = $availableAt > now()->getTimestamp()
-                    ? Carbon::createFromTimestamp($availableAt)
-                    : now()->addSeconds(max(1, (int) config(
-                        'plugins.ai-video-generator.general.roboneo.motion.no_proxy_retry_seconds',
-                        30,
-                    )));
-                $this->scheduleAdmission($source, $task, $retryAt);
+                    return;
+                }
 
-                return;
+                $proxyId = $kiotProxyLease->proxyId;
+                $proxyUrl = $kiotProxyLease->proxyUrl;
+            } else {
+                $proxyPool = $this->proxyPool();
+                $proxyId = (string) (is_array($quotedTask)
+                    ? data_get($payload, 'roboneo.admission.proxy_id')
+                    : data_get($submission, 'next_proxy_id'));
+
+                if ($quotedTask === null && ! $proxyPool->isAvailable($proxyId)) {
+                    $proxyId = (string) ($proxyPool->initialId($tokenLease->tokenId) ?? '');
+                }
+
+                $proxyUrl = $proxyPool->url($proxyId);
+
+                if ($proxyPool->hasConfiguredProxies() && $proxyUrl === null) {
+                    $tokenLease->release();
+                    $coordinator->releaseTokenReservation($tokenLease->tokenId, $reservationOwner);
+                    $availableAt = $proxyPool->earliestAvailableAt();
+                    $retryAt = $availableAt > now()->getTimestamp()
+                        ? Carbon::createFromTimestamp($availableAt)
+                        : now()->addSeconds(max(1, (int) config(
+                            'plugins.ai-video-generator.general.roboneo.motion.no_proxy_retry_seconds',
+                            30,
+                        )));
+                    $this->scheduleAdmission($source, $task, $retryAt);
+
+                    return;
+                }
             }
 
             $httpSettings = $proxyUrl === null
@@ -173,6 +204,8 @@ class RoboNeoTaskPipelineService
                 'gid_hash' => $this->fingerprint($attemptGid),
                 'ip_family' => $networkRoute,
                 'proxy_id' => $proxyId,
+                'kiot_proxy_key_id' => $kiotProxyLease?->keyId,
+                'proxy_fingerprint' => $kiotProxyLease?->fingerprint,
             ];
 
             try {
@@ -189,7 +222,13 @@ class RoboNeoTaskPipelineService
                     );
                     $quotedTask['submission_trace_id'] ??= RoboNeoIdentity::traceId();
                     $quotedTask['submission_seed'] ??= RoboNeoIdentity::seed();
-                    $this->storeAdmissionQuote($task, $tokenLease->tokenId, $proxyId, $quotedTask);
+                    $this->storeAdmissionQuote(
+                        $task,
+                        $tokenLease->tokenId,
+                        $proxyId,
+                        $quotedTask,
+                        $kiotProxyLease?->keyId,
+                    );
                 }
                 $attemptContext = [
                     ...$attemptContext,
@@ -228,7 +267,11 @@ class RoboNeoTaskPipelineService
                     $proxyId,
                     $quotedTask,
                     $attemptContext,
+                    $kiotProxyLease?->keyId,
                 );
+                if ($kiotProxyLease) {
+                    $kiotManager->markAccepted($kiotProxyLease, $tokenLease->tokenId);
+                }
                 $tokenLease->release();
                 $coordinator->releaseTokenReservation($tokenLease->tokenId, $reservationOwner);
                 $acceptedTask = $task->fresh() ?: $task;
@@ -238,14 +281,27 @@ class RoboNeoTaskPipelineService
             } catch (Throwable $exception) {
                 if ($this->isBusySubmissionError($exception)) {
                     $tokenLease->release();
-                    $this->handleBusyAdmission($source, $task, $tokens, $attemptContext, $exception);
+                    $this->handleBusyAdmission(
+                        $source,
+                        $task,
+                        $tokens,
+                        $attemptContext,
+                        $exception,
+                        $kiotProxyLease,
+                    );
 
                     return;
                 }
 
                 if ($this->isTransientAdmissionError($exception)) {
                     $tokenLease->release();
-                    $this->handleTransientAdmission($source, $task, $attemptContext, $exception);
+                    $this->handleTransientAdmission(
+                        $source,
+                        $task,
+                        $attemptContext,
+                        $exception,
+                        $kiotProxyLease,
+                    );
 
                     return;
                 }
@@ -254,6 +310,9 @@ class RoboNeoTaskPipelineService
                     $this->apiTokenRepository->deactivate($tokenLease->tokenId);
                     $tokenLease->release();
                     $coordinator->releaseTokenReservation($tokenLease->tokenId, $reservationOwner);
+                    if ($kiotProxyLease) {
+                        $kiotManager->release($kiotProxyLease);
+                    }
                     $this->appendSubmissionHistory($task, [
                         ...$attemptContext,
                         'status' => 'credential_invalid',
@@ -269,6 +328,9 @@ class RoboNeoTaskPipelineService
                 // release the cache reservation directly as well.
                 $tokenLease->release();
                 $coordinator->releaseTokenReservation($tokenLease->tokenId, $reservationOwner);
+                if ($kiotProxyLease) {
+                    $kiotManager->release($kiotProxyLease);
+                }
                 $this->failAdmissionException($source, $task, $exception, $attemptContext);
             } finally {
                 $tokenLease->release();
@@ -294,6 +356,22 @@ class RoboNeoTaskPipelineService
         try {
             $this->pollProvider($source, $task->fresh() ?: $task);
         } catch (Throwable $exception) {
+            if ($exception instanceof RoboNeoProtocolException && in_array(
+                $exception->protocolCode,
+                ['kiot_proxy_lease_unavailable', 'kiot_proxy_session_changed'],
+                true,
+            )) {
+                $this->deactivateApiToken($task);
+                $this->releaseKiotProxyForTask($source, $task);
+                $source->fail(
+                    $task->fresh() ?: $task,
+                    'ROBONEO_PROXY_SESSION_LOST',
+                    'The dedicated proxy session ended before RoboNeo returned a terminal result.',
+                );
+
+                return;
+            }
+
             report($exception);
             $payload = is_array($task->payload ?? null) ? $task->payload : [];
             $payload['roboneo']['last_poll_error'] = [
@@ -331,6 +409,7 @@ class RoboNeoTaskPipelineService
         }
 
         $this->deactivateApiToken($task);
+        $this->releaseKiotProxyForTask($source, $task);
         $source->fail(
             $task->fresh() ?: $task,
             'POLLING_TIMEOUT',
@@ -366,7 +445,14 @@ class RoboNeoTaskPipelineService
         }
 
         $proxyId = (string) ($roboNeo['proxy_id'] ?? '');
-        $proxyUrl = $this->proxyPool()->url($proxyId);
+        $kiotProxyKeyId = (int) ($roboNeo['kiot_proxy_key_id'] ?? 0);
+        $kiotProxyLease = $kiotProxyKeyId > 0
+            ? $this->kiotProxyManager()->forTask(
+                $kiotProxyKeyId,
+                $this->reservationOwner($source, (string) $task->task_id),
+            )
+            : null;
+        $proxyUrl = $kiotProxyLease?->proxyUrl ?: $this->proxyPool()->url($proxyId);
         $settings = $proxyUrl === null ? [] : ['http' => ['proxy_url' => $proxyUrl]];
         $result = $this->roboNeo->poll($roboNeoTaskId, $roomId, $accessToken, $sessionData, $settings);
         $payload['roboneo']['session_data'] = $result['session_data'];
@@ -376,6 +462,9 @@ class RoboNeoTaskPipelineService
             $storedVideo = $this->storeResultOnR2((string) $result['result_url'], (string) $task->task_id);
             $this->deactivateApiToken($task->fresh() ?: $task);
             $source->complete($task->fresh() ?: $task, $storedVideo);
+            if ($kiotProxyLease) {
+                $this->kiotProxyManager()->release($kiotProxyLease);
+            }
 
             return;
         }
@@ -388,6 +477,9 @@ class RoboNeoTaskPipelineService
                 $failureCode,
                 (string) ($result['message'] ?? 'RoboNeo could not create the video.'),
             );
+            if ($kiotProxyLease) {
+                $this->kiotProxyManager()->release($kiotProxyLease);
+            }
         }
     }
 
@@ -397,9 +489,47 @@ class RoboNeoTaskPipelineService
         array $activeTokens,
         array $attemptContext,
         RoboNeoProtocolException $exception,
+        ?KiotProxyLease $kiotProxyLease = null,
     ): void {
         $coordinator = $this->coordinator();
         $tokenId = (int) $attemptContext['api_token_id'];
+
+        if ($kiotProxyLease) {
+            $this->kiotProxyManager()->mark6003(
+                $kiotProxyLease,
+                $tokenId,
+                $source->key(),
+                (string) $task->task_id,
+            );
+            $this->appendSubmissionHistory($task, [
+                ...$attemptContext,
+                'status' => 'busy_6003_quarantined',
+                'provider_code' => (string) $exception->protocolCode,
+                'at' => now()->toISOString(),
+            ]);
+            $task = $this->resetAdmissionForRetry($source, $task);
+            $retryAt = $this->kiotProxyManager()->earliestAvailableAt();
+            $this->scheduleAdmission(
+                $source,
+                $task,
+                $retryAt,
+                (int) $attemptContext['attempt'],
+                $tokenId,
+            );
+
+            Log::warning('RoboNeo 6003 quarantined the token and KiotProxy route.', [
+                'source' => $source->key(),
+                'task_id' => $task->task_id,
+                'attempt' => $attemptContext['attempt'],
+                'api_token_id' => $tokenId,
+                'kiot_proxy_key_id' => $kiotProxyLease->keyId,
+                'proxy_fingerprint' => $kiotProxyLease->fingerprint,
+                'next_retry_at' => $retryAt->toISOString(),
+            ]);
+
+            return;
+        }
+
         $busyStrikeExpiry = now()->addSeconds(max(60, (int) config(
             'plugins.ai-video-generator.general.roboneo.motion.token_busy_strike_ttl_seconds',
             3600,
@@ -465,6 +595,7 @@ class RoboNeoTaskPipelineService
         Model $task,
         array $attemptContext,
         Throwable $exception,
+        ?KiotProxyLease $kiotProxyLease = null,
     ): void {
         $retryAt = now()->addSeconds($this->randomConfiguredDelay(
             'transient_retry_min_seconds',
@@ -477,7 +608,18 @@ class RoboNeoTaskPipelineService
         $nextProxyId = null;
         $proxyCooldownUntil = null;
 
-        if ($this->isProxyTransportError($exception) && $proxyId !== '') {
+        if ($this->isProxyTransportError($exception) && $kiotProxyLease) {
+            $proxyCooldownUntil = $this->kiotProxyManager()->markTransportFailure(
+                $kiotProxyLease,
+                $providerCode,
+            );
+            $retryAt = $this->kiotProxyManager()->earliestAvailableAt();
+            $task = $this->resetAdmissionForRetry(
+                $source,
+                $task,
+                (int) ($attemptContext['api_token_id'] ?? 0),
+            );
+        } elseif ($this->isProxyTransportError($exception) && $proxyId !== '') {
             $proxyCooldownUntil = now()->addSeconds(max(1, (int) config(
                 'plugins.ai-video-generator.general.roboneo.motion.proxy_cooldown_seconds',
                 300,
@@ -567,11 +709,18 @@ class RoboNeoTaskPipelineService
     {
         $this->releaseAdmissionReservation($source, $task);
 
+        $history = data_get($task->payload, 'roboneo.submission.history', []);
+        $has6003 = collect(is_array($history) ? $history : [])->contains(
+            static fn ($entry): bool => (string) data_get($entry, 'provider_code') === '6003',
+        );
+
         $this->failAdmissionTask(
             $source,
             $task,
-            'ROBONEO_PROVIDER_UNAVAILABLE',
-            'RoboNeo is temporarily unavailable after the maximum admission wait.',
+            $has6003 ? 'ROBONEO_6003_BLOCKED' : 'ROBONEO_PROVIDER_UNAVAILABLE',
+            $has6003
+                ? 'RoboNeo rejected the available account/network pairs with provider code 6003.'
+                : 'RoboNeo is temporarily unavailable after the maximum admission wait.',
         );
     }
 
@@ -609,6 +758,7 @@ class RoboNeoTaskPipelineService
         ];
         $task->update(['payload' => $payload]);
         $this->releaseAdmissionReservation($source, $task);
+        $this->releaseKiotProxyForTask($source, $task);
         $source->cleanupInputs($task->fresh() ?: $task);
         $source->fail($task->fresh() ?: $task, $code, $message);
     }
@@ -622,6 +772,7 @@ class RoboNeoTaskPipelineService
         string $proxyId,
         array $quotedTask,
         array $attemptContext,
+        ?int $kiotProxyKeyId = null,
     ): void {
         $payload = is_array($task->payload ?? null) ? $task->payload : [];
         $history = data_get($payload, 'roboneo.submission.history', []);
@@ -646,6 +797,7 @@ class RoboNeoTaskPipelineService
         $payload['roboneo']['session_data'] = $submittedTask['session_data'];
         $payload['roboneo']['api_token_id'] = $apiTokenId;
         $payload['roboneo']['proxy_id'] = $proxyId;
+        $payload['roboneo']['kiot_proxy_key_id'] = $kiotProxyKeyId;
         $payload['roboneo']['processing_deadline_at'] = now()
             ->addMinutes($this->externalTaskDeadlineMinutes())
             ->toISOString();
@@ -781,6 +933,11 @@ class RoboNeoTaskPipelineService
         return $this->proxyPool ?? new RoboNeoProxyPool;
     }
 
+    private function kiotProxyManager(): KiotProxyManager
+    {
+        return $this->kiotProxyManager ??= app(KiotProxyManager::class);
+    }
+
     private function admissionDeadlineMinutes(): int
     {
         return max(1, (int) config(
@@ -833,12 +990,18 @@ class RoboNeoTaskPipelineService
         return $value === '' ? null : substr(hash('sha256', $value), 0, 12);
     }
 
-    private function storeAdmissionQuote(Model $task, int $apiTokenId, string $proxyId, array $quotedTask): void
-    {
+    private function storeAdmissionQuote(
+        Model $task,
+        int $apiTokenId,
+        string $proxyId,
+        array $quotedTask,
+        ?int $kiotProxyKeyId = null,
+    ): void {
         $payload = is_array($task->payload ?? null) ? $task->payload : [];
         $payload['roboneo']['admission'] = [
             'api_token_id' => $apiTokenId,
             'proxy_id' => $proxyId,
+            'kiot_proxy_key_id' => $kiotProxyKeyId,
             'quoted_task' => $quotedTask,
             'reserved_at' => now()->toISOString(),
         ];
@@ -876,6 +1039,27 @@ class RoboNeoTaskPipelineService
                 $tokenId,
                 $this->reservationOwner($source, (string) $task->task_id),
             );
+        }
+
+        $this->releaseKiotProxyForTask($source, $task);
+    }
+
+    private function releaseKiotProxyForTask(RoboNeoTaskSource $source, Model $task): void
+    {
+        $keyId = (int) data_get($task->payload, 'roboneo.kiot_proxy_key_id', 0);
+        $keyId = $keyId ?: (int) data_get($task->payload, 'roboneo.admission.kiot_proxy_key_id', 0);
+
+        if ($keyId <= 0) {
+            return;
+        }
+
+        try {
+            $lease = $this->kiotProxyManager()->forTask(
+                $keyId,
+                $this->reservationOwner($source, (string) $task->task_id),
+            );
+            $this->kiotProxyManager()->release($lease);
+        } catch (Throwable) {
         }
     }
 
