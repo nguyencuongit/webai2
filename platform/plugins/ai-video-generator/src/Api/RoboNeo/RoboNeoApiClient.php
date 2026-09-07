@@ -4,6 +4,7 @@ namespace Botble\AiVideoGenerator\Api\RoboNeo;
 
 use GuzzleHttp\Cookie\CookieJar;
 use GuzzleHttp\Cookie\SetCookie;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Client\Response;
@@ -290,6 +291,23 @@ class RoboNeoApiClient
                 );
 
             return $callback($request)->throw();
+        } catch (ConnectionException $exception) {
+            $viaProxy = $this->setting('http.proxy_url') !== '';
+
+            throw new RoboNeoProtocolException(
+                sprintf(
+                    'RoboNeo request [%s] could not connect after %d attempt(s)%s.',
+                    $stage,
+                    max(1, $attempts),
+                    $viaProxy ? ' through the assigned proxy' : '',
+                ),
+                $viaProxy ? 'proxy_connection_failed' : 'connection_failed',
+                [
+                    'stage' => $stage,
+                    'attempts' => max(1, $attempts),
+                    'via_proxy' => $viaProxy,
+                ],
+            );
         } catch (RequestException $exception) {
             $status = $exception->response->status();
             $host = $this->requestHost($exception);
@@ -314,7 +332,7 @@ class RoboNeoApiClient
 
     private function request(): PendingRequest
     {
-        $curlOptions = [CURLOPT_PROXY => ''];
+        $curlOptions = $this->proxyCurlOptions($this->setting('http.proxy_url'));
         $ipFamily = strtolower((string) data_get($this->settings, 'http.ip_family', 'auto'));
 
         if ($ipFamily === 'ipv4') {
@@ -327,15 +345,50 @@ class RoboNeoApiClient
             'access-token' => $this->accessToken, 'accept' => 'application/json, text/plain, */*',
             'origin' => 'https://www.roboneo.com', 'referer' => 'https://www.roboneo.com/',
             'accept-language' => 'en-US,en;q=0.9', 'user-agent' => $this->setting('client.user_agent'),
-            // RoboNeo must be contacted directly. The local development environment
-            // may define a non-running HTTP(S)_PROXY, which would otherwise make the
-            // queue worker unable to poll or download a completed task.
         ])->withOptions([
             'cookies' => $this->cookieJar,
-            // CURLOPT_PROXY must be explicit here. An empty Guzzle proxy array
-            // is merged with the HTTP(S)_PROXY defaults in CLI workers.
+            // CURLOPT_PROXY is explicit so CLI-level HTTP(S)_PROXY variables never
+            // override the task's assigned proxy (or the deliberate direct mode).
             'curl' => $curlOptions,
         ])->connectTimeout(20)->timeout(120);
+    }
+
+    private function proxyCurlOptions(string $proxyUrl): array
+    {
+        if ($proxyUrl === '') {
+            return [CURLOPT_PROXY => ''];
+        }
+
+        $parts = parse_url($proxyUrl);
+
+        if (! is_array($parts)) {
+            throw new RoboNeoProtocolException(
+                'The configured RoboNeo proxy is invalid.',
+                'invalid_proxy_configuration',
+            );
+        }
+
+        $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+        $host = (string) ($parts['host'] ?? '');
+        $port = (int) ($parts['port'] ?? 0);
+
+        if (! in_array($scheme, ['http', 'https', 'socks5', 'socks5h'], true)
+            || $host === ''
+            || $port <= 0) {
+            throw new RoboNeoProtocolException(
+                'The configured RoboNeo proxy is invalid.',
+                'invalid_proxy_configuration',
+            );
+        }
+
+        $curlOptions = [CURLOPT_PROXY => sprintf('%s://%s:%d', $scheme, $host, $port)];
+
+        if (isset($parts['user'])) {
+            $curlOptions[CURLOPT_PROXYUSERPWD] = rawurldecode((string) $parts['user'])
+                .':'.rawurldecode((string) ($parts['pass'] ?? ''));
+        }
+
+        return $curlOptions;
     }
 
     private function retryDelays(): array
@@ -355,9 +408,10 @@ class RoboNeoApiClient
 
     private function isConnectFail(Throwable $exception): bool
     {
-        return $exception instanceof RequestException
+        return $exception instanceof ConnectionException
+            || ($exception instanceof RequestException
             && $exception->response->status() === 503
-            && str_contains(strtoupper($exception->response->body()), 'CONNECT FAIL');
+            && str_contains(strtoupper($exception->response->body()), 'CONNECT FAIL'));
     }
 
     private function requestHost(Throwable $exception): ?string
@@ -392,6 +446,7 @@ class RoboNeoApiClient
             'credentials.app_token' => '', 'client.id' => '1189857647', 'client.scene' => 'roboneo',
             'client.area_code' => 'VN', 'client.language' => 'en', 'client.web_version' => '4.9.0', 'client.zip_version' => '4.76000',
             'client.user_agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
+            'http.proxy_url' => '',
             'motion.api_name' => 'video_bonbon_motioncontrol_v26', 'motion.tree_id' => '93', 'motion.quality' => 'std',
         ];
         $value = data_get($this->settings, $key, config("plugins.ai-video-generator.general.roboneo.{$key}", $defaults[$key]));

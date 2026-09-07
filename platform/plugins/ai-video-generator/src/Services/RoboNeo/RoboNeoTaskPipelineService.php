@@ -23,6 +23,7 @@ class RoboNeoTaskPipelineService
         protected AiVideoApiTokenInterface $apiTokenRepository,
         protected R2VideoStorageService $r2VideoStorage,
         protected ?RoboNeoAdmissionCoordinator $admissionCoordinator = null,
+        protected ?RoboNeoProxyPool $proxyPool = null,
     ) {}
 
     public function submit(RoboNeoTaskSource $source, string $taskId): void
@@ -133,13 +134,45 @@ class RoboNeoTaskPipelineService
 
             $attempt = (int) data_get($submission, 'attempt', 0) + 1;
             $ipFamily = $attempt % 2 === 0 ? 'ipv6' : 'ipv4';
+            $proxyPool = $this->proxyPool();
+            $proxyId = (string) (is_array($quotedTask)
+                ? data_get($payload, 'roboneo.admission.proxy_id')
+                : data_get($submission, 'next_proxy_id'));
+
+            if ($quotedTask === null && ! $proxyPool->isAvailable($proxyId)) {
+                $proxyId = (string) ($proxyPool->initialId($tokenLease->tokenId) ?? '');
+            }
+
+            $proxyUrl = $proxyPool->url($proxyId);
+
+            if ($proxyPool->hasConfiguredProxies() && $proxyUrl === null) {
+                $tokenLease->release();
+                $coordinator->releaseTokenReservation($tokenLease->tokenId, $reservationOwner);
+                $availableAt = $proxyPool->earliestAvailableAt();
+                $retryAt = $availableAt > now()->getTimestamp()
+                    ? Carbon::createFromTimestamp($availableAt)
+                    : now()->addSeconds(max(1, (int) config(
+                        'plugins.ai-video-generator.general.roboneo.motion.no_proxy_retry_seconds',
+                        30,
+                    )));
+                $this->scheduleAdmission($source, $task, $retryAt);
+
+                return;
+            }
+
+            $httpSettings = $proxyUrl === null
+                ? ['ip_family' => $ipFamily]
+                : ['proxy_url' => $proxyUrl];
+            $networkRoute = $proxyUrl === null ? $ipFamily : 'proxy';
+
             $attemptGid = RoboNeoIdentity::gid();
             $attemptContext = [
                 'attempt' => $attempt,
                 'api_token_id' => $tokenLease->tokenId,
                 'token_hash' => $this->fingerprint($tokenLease->accessToken),
                 'gid_hash' => $this->fingerprint($attemptGid),
-                'ip_family' => $ipFamily,
+                'ip_family' => $networkRoute,
+                'proxy_id' => $proxyId,
             ];
 
             try {
@@ -149,11 +182,14 @@ class RoboNeoTaskPipelineService
                         $localInputs['video'],
                         $tokenLease->accessToken,
                         max(1, (int) ($payload['duration'] ?? 10)),
-                        ['credentials' => ['gid' => $attemptGid, 'uid' => null]],
+                        [
+                            'credentials' => ['gid' => $attemptGid, 'uid' => null],
+                            'http' => $httpSettings,
+                        ],
                     );
                     $quotedTask['submission_trace_id'] ??= RoboNeoIdentity::traceId();
                     $quotedTask['submission_seed'] ??= RoboNeoIdentity::seed();
-                    $this->storeAdmissionQuote($task, $tokenLease->tokenId, $quotedTask);
+                    $this->storeAdmissionQuote($task, $tokenLease->tokenId, $proxyId, $quotedTask);
                 }
                 $attemptContext = [
                     ...$attemptContext,
@@ -176,7 +212,7 @@ class RoboNeoTaskPipelineService
 
                 try {
                     $submittedTask = $this->roboNeo->submit($quotedTask, $tokenLease->accessToken, [
-                        'http' => ['ip_family' => $ipFamily],
+                        'http' => $httpSettings,
                     ]);
                 } finally {
                     $submitGate->release();
@@ -187,11 +223,13 @@ class RoboNeoTaskPipelineService
                     $task,
                     $submittedTask,
                     $attempt,
-                    $ipFamily,
+                    $networkRoute,
                     $tokenLease->tokenId,
+                    $proxyId,
                     $quotedTask,
                     $attemptContext,
                 );
+                $tokenLease->release();
                 $coordinator->releaseTokenReservation($tokenLease->tokenId, $reservationOwner);
                 $acceptedTask = $task->fresh() ?: $task;
                 $this->deactivateApiToken($acceptedTask);
@@ -199,12 +237,14 @@ class RoboNeoTaskPipelineService
                 $source->dispatchPolling($taskId, $this->pollInterval());
             } catch (Throwable $exception) {
                 if ($this->isBusySubmissionError($exception)) {
+                    $tokenLease->release();
                     $this->handleBusyAdmission($source, $task, $tokens, $attemptContext, $exception);
 
                     return;
                 }
 
                 if ($this->isTransientAdmissionError($exception)) {
+                    $tokenLease->release();
                     $this->handleTransientAdmission($source, $task, $attemptContext, $exception);
 
                     return;
@@ -212,6 +252,7 @@ class RoboNeoTaskPipelineService
 
                 if ($this->isCredentialError($exception)) {
                     $this->apiTokenRepository->deactivate($tokenLease->tokenId);
+                    $tokenLease->release();
                     $coordinator->releaseTokenReservation($tokenLease->tokenId, $reservationOwner);
                     $this->appendSubmissionHistory($task, [
                         ...$attemptContext,
@@ -226,6 +267,7 @@ class RoboNeoTaskPipelineService
 
                 // quote() can fail before its room is persisted on the task, so
                 // release the cache reservation directly as well.
+                $tokenLease->release();
                 $coordinator->releaseTokenReservation($tokenLease->tokenId, $reservationOwner);
                 $this->failAdmissionException($source, $task, $exception, $attemptContext);
             } finally {
@@ -323,7 +365,10 @@ class RoboNeoTaskPipelineService
             $payload['roboneo']['api_token_id'] = $apiTokenId;
         }
 
-        $result = $this->roboNeo->poll($roboNeoTaskId, $roomId, $accessToken, $sessionData);
+        $proxyId = (string) ($roboNeo['proxy_id'] ?? '');
+        $proxyUrl = $this->proxyPool()->url($proxyId);
+        $settings = $proxyUrl === null ? [] : ['http' => ['proxy_url' => $proxyUrl]];
+        $result = $this->roboNeo->poll($roboNeoTaskId, $roomId, $accessToken, $sessionData, $settings);
         $payload['roboneo']['session_data'] = $result['session_data'];
         $task->update(['payload' => $payload]);
 
@@ -354,19 +399,30 @@ class RoboNeoTaskPipelineService
         RoboNeoProtocolException $exception,
     ): void {
         $coordinator = $this->coordinator();
-        $tokenCooldownUntil = now()->addSeconds($this->randomConfiguredDelay(
-            'token_cooldown_min_seconds',
-            'token_cooldown_max_seconds',
-            300,
-            600,
-        ));
+        $tokenId = (int) $attemptContext['api_token_id'];
+        $busyStrikeExpiry = now()->addSeconds(max(60, (int) config(
+            'plugins.ai-video-generator.general.roboneo.motion.token_busy_strike_ttl_seconds',
+            3600,
+        )));
+        $busyStrikes = $coordinator->recordTokenBusy($tokenId, $busyStrikeExpiry);
+        $tokenCooldownSeconds = $busyStrikes >= 2
+            ? max(60, (int) config(
+                'plugins.ai-video-generator.general.roboneo.motion.repeated_busy_token_cooldown_seconds',
+                1800,
+            ))
+            : $this->randomConfiguredDelay(
+                'token_cooldown_min_seconds',
+                'token_cooldown_max_seconds',
+                300,
+                600,
+            );
+        $tokenCooldownUntil = now()->addSeconds($tokenCooldownSeconds);
         $globalCooldownUntil = now()->addSeconds($this->randomConfiguredDelay(
             'global_cooldown_min_seconds',
             'global_cooldown_max_seconds',
             45,
             90,
         ));
-        $tokenId = (int) $attemptContext['api_token_id'];
 
         $coordinator->cooldownToken($tokenId, $tokenCooldownUntil);
         $coordinator->cooldownGlobal($globalCooldownUntil);
@@ -374,10 +430,13 @@ class RoboNeoTaskPipelineService
             ...$attemptContext,
             'status' => 'busy',
             'provider_code' => (string) $exception->protocolCode,
+            'token_busy_strikes' => $busyStrikes,
             'token_cooldown_until' => $tokenCooldownUntil->toISOString(),
             'global_cooldown_until' => $globalCooldownUntil->toISOString(),
             'at' => now()->toISOString(),
         ]);
+        $nextProxyId = $this->proxyPool()->nextId((string) ($attemptContext['proxy_id'] ?? ''));
+        $task = $this->resetAdmissionForRetry($source, $task);
         $hasAlternative = collect($activeTokens)->contains(
             static fn (array $token): bool => (int) $token['id'] !== $tokenId,
         );
@@ -388,6 +447,7 @@ class RoboNeoTaskPipelineService
             $nextRetryAt,
             (int) $attemptContext['attempt'],
             $tokenId,
+            $nextProxyId,
         );
 
         Log::warning('RoboNeo admission is busy; task retained for a fresh retry.', [
@@ -412,21 +472,59 @@ class RoboNeoTaskPipelineService
             30,
             90,
         ));
-        $this->coordinator()->cooldownGlobal($retryAt);
+        $providerCode = $this->exceptionCode($exception);
+        $proxyId = (string) ($attemptContext['proxy_id'] ?? '');
+        $nextProxyId = null;
+        $proxyCooldownUntil = null;
+
+        if ($this->isProxyTransportError($exception) && $proxyId !== '') {
+            $proxyCooldownUntil = now()->addSeconds(max(1, (int) config(
+                'plugins.ai-video-generator.general.roboneo.motion.proxy_cooldown_seconds',
+                300,
+            )));
+            $this->proxyPool()->cooldown($proxyId, $proxyCooldownUntil);
+            $nextProxyId = $this->proxyPool()->nextId($proxyId);
+
+            if ($nextProxyId === null) {
+                $availableAt = $this->proxyPool()->earliestAvailableAt();
+
+                if ($availableAt > $retryAt->getTimestamp()) {
+                    $retryAt = Carbon::createFromTimestamp($availableAt);
+                }
+            }
+
+            $task = $this->resetAdmissionForRetry(
+                $source,
+                $task,
+                (int) ($attemptContext['api_token_id'] ?? 0),
+            );
+        } else {
+            $this->coordinator()->cooldownGlobal($retryAt);
+        }
+
         $this->appendSubmissionHistory($task, [
             ...$attemptContext,
             'status' => 'transient_provider_failure',
-            'provider_code' => $this->exceptionCode($exception),
-            'global_cooldown_until' => $retryAt->toISOString(),
+            'provider_code' => $providerCode,
+            'proxy_cooldown_until' => $proxyCooldownUntil?->toISOString(),
+            'global_cooldown_until' => $proxyCooldownUntil === null ? $retryAt->toISOString() : null,
             'at' => now()->toISOString(),
         ]);
-        $this->scheduleAdmission($source, $task, $retryAt, (int) ($attemptContext['attempt'] ?? 0));
+        $this->scheduleAdmission(
+            $source,
+            $task,
+            $retryAt,
+            (int) ($attemptContext['attempt'] ?? 0),
+            nextProxyId: $proxyCooldownUntil === null ? null : ($nextProxyId ?? ''),
+        );
 
         Log::warning('Transient RoboNeo admission failure; task retained for a fresh retry.', [
             'source' => $source->key(),
             'task_id' => $task->task_id,
             'attempt' => $attemptContext['attempt'] ?? null,
-            'provider_code' => $this->exceptionCode($exception),
+            'provider_code' => $providerCode,
+            'proxy_id' => $proxyId ?: null,
+            'next_proxy_id' => $nextProxyId,
             'next_retry_at' => $retryAt->toISOString(),
         ]);
     }
@@ -437,6 +535,7 @@ class RoboNeoTaskPipelineService
         Carbon $at,
         ?int $attempt = null,
         ?int $lastBusyTokenId = null,
+        ?string $nextProxyId = null,
     ): void {
         $payload = is_array($task->payload ?? null) ? $task->payload : [];
         $submission = is_array(data_get($payload, 'roboneo.submission'))
@@ -448,6 +547,7 @@ class RoboNeoTaskPipelineService
             'state' => 'retry_scheduled',
             'next_retry_at' => $at->toISOString(),
             'last_busy_token_id' => $lastBusyTokenId ?? ($submission['last_busy_token_id'] ?? null),
+            'next_proxy_id' => $nextProxyId ?? ($submission['next_proxy_id'] ?? null),
         ];
         $task->update(['payload' => $payload]);
         $source->dispatchSubmission((string) $task->task_id, $at);
@@ -488,7 +588,7 @@ class RoboNeoTaskPipelineService
             'provider_code' => $code,
             'at' => now()->toISOString(),
         ]);
-        $this->failAdmissionTask($source, $task, $code, $exception->getMessage());
+        $this->failAdmissionTask($source, $task, $code, $this->safeFailureMessage($exception));
     }
 
     private function failAdmissionTask(
@@ -519,6 +619,7 @@ class RoboNeoTaskPipelineService
         int $attempt,
         string $ipFamily,
         int $apiTokenId,
+        string $proxyId,
         array $quotedTask,
         array $attemptContext,
     ): void {
@@ -544,6 +645,7 @@ class RoboNeoTaskPipelineService
         $payload['roboneo']['task_id'] = $submittedTask['task_id'];
         $payload['roboneo']['session_data'] = $submittedTask['session_data'];
         $payload['roboneo']['api_token_id'] = $apiTokenId;
+        $payload['roboneo']['proxy_id'] = $proxyId;
         $payload['roboneo']['processing_deadline_at'] = now()
             ->addMinutes($this->externalTaskDeadlineMinutes())
             ->toISOString();
@@ -556,6 +658,7 @@ class RoboNeoTaskPipelineService
         ];
         unset($payload['roboneo']['admission']);
         unset($payload['roboneo']['submission']['next_retry_at']);
+        unset($payload['roboneo']['submission']['next_proxy_id']);
         $task->update(['payload' => $payload]);
     }
 
@@ -631,9 +734,15 @@ class RoboNeoTaskPipelineService
         return in_array($code, [
             'connection_failed',
             'connect_timeout',
+            'proxy_connection_failed',
             'request_timeout',
             'temporarily_unavailable',
         ], true);
+    }
+
+    private function isProxyTransportError(Throwable $exception): bool
+    {
+        return strtolower($this->exceptionCode($exception)) === 'proxy_connection_failed';
     }
 
     private function exceptionCode(Throwable $exception): string
@@ -643,9 +752,33 @@ class RoboNeoTaskPipelineService
             : 'ROBONEO_PIPELINE_FAILED';
     }
 
+    private function safeFailureMessage(Throwable $exception): string
+    {
+        if (! $exception instanceof RoboNeoProtocolException) {
+            return 'RoboNeo failed before provider admission.';
+        }
+
+        $message = preg_replace(
+            [
+                '#(https?://)[^/@\s]+:[^/@\s]+@#i',
+                '/([?&](?:access[_-]?token|api[_-]?key|token|authorization)=)[^&\s]+/i',
+                '/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/i',
+            ],
+            ['$1[redacted]@', '$1[redacted]', 'Bearer [redacted]'],
+            $exception->getMessage(),
+        );
+
+        return mb_substr(trim((string) $message), 0, 500);
+    }
+
     private function coordinator(): RoboNeoAdmissionCoordinator
     {
         return $this->admissionCoordinator ??= new RoboNeoAdmissionCoordinator;
+    }
+
+    private function proxyPool(): RoboNeoProxyPool
+    {
+        return $this->proxyPool ?? new RoboNeoProxyPool;
     }
 
     private function admissionDeadlineMinutes(): int
@@ -700,15 +833,37 @@ class RoboNeoTaskPipelineService
         return $value === '' ? null : substr(hash('sha256', $value), 0, 12);
     }
 
-    private function storeAdmissionQuote(Model $task, int $apiTokenId, array $quotedTask): void
+    private function storeAdmissionQuote(Model $task, int $apiTokenId, string $proxyId, array $quotedTask): void
     {
         $payload = is_array($task->payload ?? null) ? $task->payload : [];
         $payload['roboneo']['admission'] = [
             'api_token_id' => $apiTokenId,
+            'proxy_id' => $proxyId,
             'quoted_task' => $quotedTask,
             'reserved_at' => now()->toISOString(),
         ];
         $task->update(['payload' => $payload]);
+    }
+
+    private function resetAdmissionForRetry(
+        RoboNeoTaskSource $source,
+        Model $task,
+        ?int $fallbackTokenId = null,
+    ): Model {
+        $payload = is_array($task->payload ?? null) ? $task->payload : [];
+        $tokenId = (int) data_get($payload, 'roboneo.admission.api_token_id', $fallbackTokenId);
+
+        if ($tokenId > 0) {
+            $this->coordinator()->releaseTokenReservation(
+                $tokenId,
+                $this->reservationOwner($source, (string) $task->task_id),
+            );
+        }
+
+        unset($payload['roboneo']['admission']);
+        $task->update(['payload' => $payload]);
+
+        return $task->fresh() ?: $task;
     }
 
     private function releaseAdmissionReservation(RoboNeoTaskSource $source, Model $task): void

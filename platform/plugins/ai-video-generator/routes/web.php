@@ -125,6 +125,7 @@ Route::group(['namespace' => 'Botble\AiVideoGenerator\Http\Controllers'], functi
             Route::post('api-tokens/import', ['as' => 'api-tokens.import', 'uses' => 'Admin\AiVideoApiTokenController@import', 'permission' => 'ai-video-generator.api-tokens.create']);
             Route::get('api-tokens/import/template', ['as' => 'api-tokens.import.template', 'uses' => 'Admin\AiVideoApiTokenController@downloadTemplate', 'permission' => 'ai-video-generator.api-tokens.index']);
             Route::get('api-tokens/create', ['as' => 'api-tokens.create', 'uses' => 'Admin\AiVideoApiTokenController@create', 'permission' => 'ai-video-generator.api-tokens.create']);
+            Route::put('api-tokens/proxy-pool', ['as' => 'api-tokens.proxy-pool.update', 'uses' => 'Admin\AiVideoApiTokenController@updateProxyPool', 'permission' => 'ai-video-generator.api-tokens.edit']);
             Route::post('api-tokens', ['as' => 'api-tokens.store', 'uses' => 'Admin\AiVideoApiTokenController@store', 'permission' => 'ai-video-generator.api-tokens.create']);
             Route::get('api-tokens/{apiToken}/edit', ['as' => 'api-tokens.edit', 'uses' => 'Admin\AiVideoApiTokenController@edit', 'permission' => 'ai-video-generator.api-tokens.edit']);
             Route::put('api-tokens/{apiToken}', ['as' => 'api-tokens.update', 'uses' => 'Admin\AiVideoApiTokenController@update', 'permission' => 'ai-video-generator.api-tokens.edit']);

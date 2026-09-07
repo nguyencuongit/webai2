@@ -9,6 +9,8 @@ use Botble\AiVideoGenerator\Repositories\Interfaces\ExternalVideoTaskInterface;
 use Botble\AiVideoGenerator\Services\Api\ExternalVideoTaskService;
 use Botble\AiVideoGenerator\Services\R2\R2VideoStorageService;
 use Botble\AiVideoGenerator\Services\RoboNeo\MotionVideoTrimmer;
+use Botble\AiVideoGenerator\Services\RoboNeo\RoboNeoProxyPool;
+use Botble\AiVideoGenerator\Services\RoboNeo\RoboNeoTaskPipelineService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
@@ -22,6 +24,8 @@ require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Repos
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/MotionVideoTrimmer.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/RoboNeoTokenLease.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/RoboNeoAdmissionCoordinator.php';
+require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/RoboNeoProxyPoolSettings.php';
+require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/RoboNeoProxyPool.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/Contracts/RoboNeoTaskSource.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/RoboNeoTaskPipelineService.php';
 require_once dirname(__DIR__, 3).'/platform/plugins/ai-video-generator/src/Services/RoboNeo/Sources/ExternalRoboNeoTaskSource.php';
@@ -36,6 +40,11 @@ class ExternalVideoTaskPollingTest extends TestCase
     public function test_polling_keeps_using_the_token_that_created_the_provider_task(): void
     {
         Queue::fake();
+        $proxyUrls = [
+            'http://proxy-user:proxy-pass@103.82.25.188:30664',
+        ];
+        $proxyPool = new RoboNeoProxyPool($proxyUrls);
+        $proxyId = $proxyPool->initialId(10);
         $task = new PollingInMemoryExternalVideoTask;
         $task->forceFill([
             'task_id' => 'external-task-4',
@@ -46,6 +55,7 @@ class ExternalVideoTaskPollingTest extends TestCase
                     'room_id' => 'room-4',
                     'session_data' => ['gid' => 'gid-4', 'uid' => 'uid-4', 'cookies' => []],
                     'api_token_id' => 10,
+                    'proxy_id' => $proxyId,
                 ],
             ],
         ]);
@@ -55,9 +65,15 @@ class ExternalVideoTaskPollingTest extends TestCase
             string $taskId,
             string $roomId,
             string $accessToken,
+            array $sessionData,
+            array $settings,
         ): array {
             if ($accessToken !== 'assigned-access-token') {
                 throw new RoboNeoProtocolException('Polling switched to another account.', 'wrong_poll_token');
+            }
+
+            if (data_get($settings, 'http.proxy_url') !== 'http://proxy-user:proxy-pass@103.82.25.188:30664') {
+                throw new RoboNeoProtocolException('Polling switched to another proxy.', 'wrong_poll_proxy');
             }
 
             return [
@@ -82,17 +98,27 @@ class ExternalVideoTaskPollingTest extends TestCase
 
         $tasks = $this->createMock(ExternalVideoTaskInterface::class);
         $tasks->method('findByTaskId')->willReturn($task);
+        $storage = $this->createMock(R2VideoStorageService::class);
+        $pipeline = new RoboNeoTaskPipelineService(
+            $roboNeo,
+            $tokens,
+            $storage,
+            proxyPool: $proxyPool,
+        );
         $service = new ExternalVideoTaskService(
             $roboNeo,
             $tokens,
             $tasks,
             $this->createMock(MotionVideoTrimmer::class),
-            $this->createMock(R2VideoStorageService::class),
+            $storage,
+            pipeline: $pipeline,
         );
 
         $service->pollRoboNeo($task);
 
         $this->assertSame('updated', data_get($task->payload, 'roboneo.session_data.poll_marker'));
+        $this->assertSame($proxyId, data_get($task->payload, 'roboneo.proxy_id'));
+        $this->assertStringNotContainsString('proxy-pass', json_encode($task->payload, JSON_THROW_ON_ERROR));
     }
 
     public function test_a_successful_provider_task_deactivates_the_exact_token_before_finishing(): void
