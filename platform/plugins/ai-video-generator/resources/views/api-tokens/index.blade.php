@@ -7,7 +7,7 @@
                 <div>
                     <x-core::card.title>KiotProxy động cho RoboNeo</x-core::card.title>
                     <div class="text-muted mt-1">
-                        Mỗi key giữ nguyên một IP cho tối đa số task đã cấu hình. Khi có lỗi 6003, IP ngừng nhận task mới và được đổi ngay khi task cuối đang dùng IP kết thúc.
+                        Mỗi IP chỉ nhận tối đa số task đã cấu hình. Khi đủ giới hạn, hệ thống đóng lô, chờ toàn bộ task kết thúc rồi đổi IP trước khi nhận lô tiếp theo. Lỗi 6003 cũng đóng lô ngay lập tức.
                     </div>
                 </div>
             </x-core::card.header>
@@ -80,6 +80,9 @@
                                         @php($activeLeases = (int) ($key->active_task_leases_count ?? 0))
                                         @if ($activeLeases > 0)
                                             <span class="badge bg-blue text-white">{{ $activeLeases }} / {{ $key->max_concurrent_tasks ?: 5 }}</span>
+                                            @if ($key->batch_sealed)
+                                                <span class="badge bg-warning text-white">Đang đóng lô</span>
+                                            @endif
                                             <small class="d-block text-muted">đến {{ $key->lease_until->format('H:i:s') }}</small>
                                         @else
                                             <span class="text-muted">0 / {{ $key->max_concurrent_tasks ?: 5 }}</span>

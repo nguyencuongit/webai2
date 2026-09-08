@@ -84,6 +84,8 @@ class KiotProxyManagerTest extends TestCase
         $this->assertSame($first->fingerprint, $second->fingerprint);
         $this->assertNull($manager->acquire('external:102', now()->addMinutes(50), (int) $key->getKey()));
         $this->assertSame(2, KiotProxyTaskLease::query()->count());
+        $this->assertTrue($key->fresh()->batch_sealed);
+        $this->assertTrue($manager->earliestAvailableAt()->equalTo(now()->addSeconds(30)));
         $this->assertStringNotContainsString(
             'secret-kiot-key',
             (string) DB::table('ai_video_kiot_proxy_keys')->value('proxy_key'),
@@ -92,10 +94,13 @@ class KiotProxyManagerTest extends TestCase
         $manager->release($first);
         $this->assertSame(1, KiotProxyTaskLease::query()->count());
         $this->assertNotNull($key->fresh()->current_http_proxy);
+        $this->assertTrue($key->fresh()->batch_sealed);
+        $this->assertNull($manager->acquire('external:102', now()->addMinutes(50), (int) $key->getKey()));
 
         $manager->release($second);
         $this->assertSame(0, KiotProxyTaskLease::query()->count());
         $this->assertNull($key->fresh()->current_http_proxy);
+        $this->assertFalse($key->fresh()->batch_sealed);
     }
 
     public function test_6003_drains_shared_proxy_and_rotates_only_after_last_task_finishes(): void
@@ -178,6 +183,7 @@ class KiotProxyManagerTest extends TestCase
             $table->string('region')->default('random');
             $table->boolean('is_active')->default(true);
             $table->unsignedSmallInteger('max_concurrent_tasks')->default(5);
+            $table->boolean('batch_sealed')->default(false);
             $table->string('health_status')->default('healthy');
             $table->string('leased_by')->nullable();
             $table->timestamp('lease_until')->nullable();

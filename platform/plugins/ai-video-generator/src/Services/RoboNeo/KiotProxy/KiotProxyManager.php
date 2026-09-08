@@ -193,6 +193,7 @@ class KiotProxyManager
 
             $key->forceFill([
                 'health_status' => 'draining_6003',
+                'batch_sealed' => true,
                 'rotate_required' => true,
                 'failure_count' => (int) $key->failure_count + 1,
                 'last_failure_code' => '6003',
@@ -217,6 +218,7 @@ class KiotProxyManager
             ->whereKey($lease->keyId)
             ->update([
                 'health_status' => 'draining_transport_failed',
+                'batch_sealed' => true,
                 'rotate_required' => true,
                 'blocked_until' => $retryAt,
                 'last_failure_code' => mb_substr($code, 0, 64),
@@ -265,6 +267,7 @@ class KiotProxyManager
 
             if ($releaseRemote) {
                 $updates += [
+                    'batch_sealed' => false,
                     'current_http_proxy' => null,
                     'current_socks5_proxy' => null,
                     'expiration_at' => null,
@@ -305,11 +308,22 @@ class KiotProxyManager
         $availableNow = $keys->contains(function (KiotProxyKey $key): bool {
             $active = $this->activeLeaseCount((int) $key->getKey());
 
-            return $active < $this->capacity($key) && (! $key->rotate_required || $active === 0);
+            return ! $key->batch_sealed
+                && $active < $this->capacity($key)
+                && (! $key->rotate_required || $active === 0);
         });
 
         if ($availableNow) {
             return now()->addSecond();
+        }
+
+        $batchIsDraining = KiotProxyKey::query()
+            ->where('is_active', true)
+            ->where('batch_sealed', true)
+            ->exists();
+
+        if ($batchIsDraining) {
+            return now()->addSeconds($this->configInt('retry_seconds', 30));
         }
 
         $timestamps = KiotProxyKey::query()
@@ -351,6 +365,7 @@ class KiotProxyManager
             'expiration_at' => $endpoint->expirationAt,
             'next_request_at' => $endpoint->nextRequestAt,
             'rotate_required' => false,
+            'batch_sealed' => false,
             'health_status' => 'healthy',
             'blocked_until' => null,
             'failure_count' => 0,
@@ -415,6 +430,7 @@ class KiotProxyManager
                 $active = $this->activeLeaseCount((int) $candidate->getKey());
 
                 return $active < $this->capacity($candidate)
+                    && ! $candidate->batch_sealed
                     && (! $candidate->rotate_required || $active === 0);
             });
 
@@ -427,10 +443,12 @@ class KiotProxyManager
                 'owner' => $owner,
                 'lease_until' => $minimumLeaseUntil,
             ]);
+            $active = $this->activeLeaseCount((int) $key->getKey());
             $key->forceFill([
-                'leased_by' => 'shared:'.$this->activeLeaseCount((int) $key->getKey()),
+                'leased_by' => 'shared:'.$active,
                 'lease_until' => $minimumLeaseUntil,
                 'last_used_at' => now(),
+                'batch_sealed' => $active >= $this->capacity($key),
             ])->save();
 
             return $key->fresh();
